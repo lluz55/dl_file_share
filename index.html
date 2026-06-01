@@ -658,6 +658,16 @@
   const MAX_HISTORY   = 200;
 
   // ────────────────────────────────────────────────────────────
+  // Mnemonic ID — 3 palavras em português, sem acentos
+  // ────────────────────────────────────────────────────────────
+  const WORDS = ('gato lobo urso pato sapo rato bode boi vaca cobra porco arara corvo pomba carpa lula cervo zebra touro burro macaco leao onca raposa lontra tatu puma tigre lince veado tucano foca polvo grilo lagarto abelha pardal falcao gaviao cisne ganso peru mico cegonha peixe cobra baleia tartaruga rio mar lago mata ilha vale monte pedra areia terra sol lua vento chuva neve fogo bosque campo selva rocha morro praia duna lama gelo vapor pico brejo lagoa charco mangue savana colina ravina gruta caverna pantano mata mesa porta livro copo prato faca cama banco vaso caixa saco bola roda fita fio cabo rede mapa carta nota moeda chave sino frasco barco trem tocha vela anzol prego vidro tapete telha tijolo mochila bolsa grade gaiola cofre tronco galho raiz graveto tabua remo leme cesto peneira funil lupa corda escada tesoura pinca chave agulha botao prego palio arco flecha espada escudo lanterna bussola relogio forte lento leve duro mole liso vivo novo velho longo curto largo alto baixo gordo magro limpo sujo fundo raso cheio vazio quente frio doce azedo rico pobre firme calmo bravo manso claro torto reto plano curvo tenro mudo salvo livre preso pronto bom mau pao leite carne arroz milho trigo mel sal tomate cacau caju cravo cedro bambu alga musgo fungo figo uva pera amora coco manga cana aveia azeite acucar abacate morango cereja ameixa castanha porto trilha poco fonte riacho farol torre ponte arena feira aldeia vila rancho curral galpao celeiro quintal pomar jardim parque clareira encosta ladeira banco praca museu templo palco circo estadio farol ruina castelo').split(' ');
+
+  function generateMnemonicId() {
+    const pick = () => WORDS[Math.floor(Math.random() * WORDS.length)];
+    return `${pick()}-${pick()}-${pick()}`;
+  }
+
+  // ────────────────────────────────────────────────────────────
   // State
   // ────────────────────────────────────────────────────────────
   let peer        = null;
@@ -820,12 +830,8 @@
   // ────────────────────────────────────────────────────────────
   // PeerJS
   // ────────────────────────────────────────────────────────────
-  function getSavedPeerId() {
-    return localStorage.getItem(LS_PEER_ID) || undefined;
-  }
-
   async function initPeer() {
-    const savedId = getSavedPeerId();
+    const savedId = localStorage.getItem(LS_PEER_ID) || generateMnemonicId();
     peer = new Peer(savedId, { debug: 0 });
 
     peer.on('open', async id => {
@@ -877,6 +883,13 @@
     });
 
     peer.on('error', err => {
+      if (err.type === 'unavailable-id') {
+        // Mnemonic collision (extremely rare) — regenerate and retry
+        localStorage.removeItem(LS_PEER_ID);
+        peer.destroy();
+        initPeer();
+        return;
+      }
       const msg = err.type === 'peer-unavailable'
         ? 'ID não encontrado'
         : err.type || 'erro de conexão';
