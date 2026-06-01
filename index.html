@@ -9,6 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -345,6 +346,56 @@
 
     .msg-row { display: flex; gap: 8px; }
 
+    /* ── ZIP toggle ────────────────────────────────────── */
+    .zip-row {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-top: -2px;
+    }
+
+    .zip-toggle {
+      position: relative;
+      width: 30px;
+      height: 17px;
+      flex-shrink: 0;
+    }
+    .zip-toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .zip-track {
+      position: absolute;
+      inset: 0;
+      border-radius: 100px;
+      background: var(--border);
+      border: 1px solid var(--border-hover);
+      cursor: pointer;
+      transition: background 0.18s, border-color 0.18s;
+    }
+    .zip-track::after {
+      content: '';
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 11px; height: 11px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.18);
+      transition: transform 0.18s;
+    }
+    .zip-toggle input:checked ~ .zip-track {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .zip-toggle input:checked ~ .zip-track::after {
+      transform: translateX(13px);
+    }
+    .zip-label {
+      font-size: 12.5px;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+      transition: color 0.15s;
+    }
+    .zip-row:has(input:checked) .zip-label { color: var(--accent); }
+
     /* ── Active transfers ──────────────────────────────── */
     .transfers-list {
       display: flex;
@@ -560,6 +611,14 @@
         <span class="drop-icon">↑</span>
         Arraste arquivos ou clique para selecionar
       </div>
+
+      <label class="zip-row">
+        <div class="zip-toggle">
+          <input type="checkbox" id="zip-mode">
+          <div class="zip-track"></div>
+        </div>
+        <span class="zip-label">compactar múltiplos arquivos em .zip</span>
+      </label>
 
       <div class="transfers-list" id="transfers-list"></div>
 
@@ -942,9 +1001,38 @@
   // ────────────────────────────────────────────────────────────
   // Sending
   // ────────────────────────────────────────────────────────────
-  function handleFileSelect(files) {
+  async function handleFileSelect(files) {
     if (!conn || !files.length) return;
-    for (const f of files) sendQueue.push(f);
+    const arr = Array.from(files);
+    const zipMode = document.getElementById('zip-mode').checked && arr.length > 1;
+
+    if (zipMode) {
+      const zip     = new JSZip();
+      const ts      = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+      const zipName = `relay-${ts}.zip`;
+
+      // Show a placeholder progress item while packing
+      const packId = uid();
+      makeProgressItem(packId, `compactando ${arr.length} arquivos…`, 0);
+
+      for (let i = 0; i < arr.length; i++) {
+        zip.file(arr[i].name, arr[i]);
+        setProgress(packId, (i + 1) / arr.length * 0.3); // 0–30% = adding
+      }
+
+      const blob = await zip.generateAsync(
+        { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
+        meta => setProgress(packId, 0.3 + meta.percent / 100 * 0.7) // 30–100% = compressing
+      );
+
+      donProgress(packId);
+
+      const zipFile = new File([blob], zipName, { type: 'application/zip' });
+      sendQueue.push(zipFile);
+    } else {
+      for (const f of arr) sendQueue.push(f);
+    }
+
     processSendQueue();
   }
 
