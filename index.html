@@ -259,12 +259,12 @@
     <div id="transfer-section">
       <div class="label">transferir</div>
 
-      <div class="drop-zone" id="drop-zone">
+      <label class="drop-zone" id="drop-zone" for="file-input">
         <input type="file" id="file-input" multiple
                onchange="handleFileSelect(this.files); this.value=''">
         <span class="drop-icon">↑</span>
         Arraste arquivos ou clique para selecionar
-      </div>
+      </label>
 
       <label class="zip-row">
         <div class="zip-toggle">

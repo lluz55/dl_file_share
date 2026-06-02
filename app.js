@@ -5,9 +5,11 @@ const CHUNK_SIZE    = 32768; // 32 KB
 const PBKDF2_ITER   = 60000;
 const SALT_STORAGE  = new TextEncoder().encode('relay-storage-v1');
 const SALT_CHANNEL  = new TextEncoder().encode('relay-channel-v1');
-const LS_PEER_ID    = 'relay_peer_id';
-const LS_HISTORY    = 'relay_history';
-const LS_THEME      = 'relay_theme';
+const LS_PEER_ID      = 'relay_peer_id';
+const LS_HISTORY      = 'relay_history';
+const LS_THEME        = 'relay_theme';
+const LS_LAST_PEER    = 'relay_last_peer';
+const LS_PEER_TG_CHAT = 'relay_peer_tg_chat';
 const LS_TG_TOKEN    = 'relay_tg_token';
 const LS_TG_CHAT_ID  = 'relay_tg_chat_id';
 const LS_TG_GROUP_ID = 'relay_tg_group_id';
@@ -307,6 +309,24 @@ async function clearHistory() {
   if (!confirm('Apagar todo o histórico? Esta ação não pode ser desfeita.')) return;
   localStorage.removeItem(LS_HISTORY);
   renderHistory([]);
+}
+
+// ────────────────────────────────────────────────────────────
+// Last-peer persistence — survives page reload, cleared on manual disconnect
+// ────────────────────────────────────────────────────────────
+function persistLastPeer() {
+  if (!lastPeerId) return;
+  localStorage.setItem(LS_LAST_PEER, lastPeerId);
+  if (peerTgChatId) {
+    localStorage.setItem(LS_PEER_TG_CHAT, String(peerTgChatId));
+  } else {
+    localStorage.removeItem(LS_PEER_TG_CHAT);
+  }
+}
+
+function clearLastPeer() {
+  localStorage.removeItem(LS_LAST_PEER);
+  localStorage.removeItem(LS_PEER_TG_CHAT);
 }
 
 // ────────────────────────────────────────────────────────────
@@ -773,6 +793,7 @@ async function switchToTgMode() {
 
   lastPeerId = pid;
   tgMode     = true;
+  persistLastPeer();
 
   // Sync offset to avoid replaying old messages
   try {
@@ -894,6 +915,21 @@ async function initPeer() {
     if (cid && cid !== id) {
       document.getElementById('peer-input').value = cid;
       connectToPeer();
+    } else if (!cid) {
+      // Restore last peer (persists across page reloads, cleared on manual disconnect)
+      const savedPeer   = localStorage.getItem(LS_LAST_PEER);
+      const savedPeerTg = localStorage.getItem(LS_PEER_TG_CHAT);
+      if (savedPeer && savedPeer !== id) {
+        document.getElementById('peer-input').value = savedPeer;
+        if (savedPeerTg && !peerTgChatId) {
+          peerTgChatId = parseInt(savedPeerTg);
+          const inp = document.getElementById('tg-chat-input');
+          if (inp) inp.value = savedPeerTg;
+          updateTgBtnVisibility();
+        }
+        debugLog('info', `restoring last peer: ${savedPeer}`);
+        connectToPeer();
+      }
     }
   });
 
@@ -1044,6 +1080,7 @@ function setupConn() {
     connectRetries = 0;
     const pid  = conn.peer;
     lastPeerId = pid;
+    persistLastPeer();
     debugLog('conn', `open · peer=${pid}`);
     channelKey = await deriveKey([myId, pid].sort().join(':'), SALT_CHANNEL);
     debugLog('info', 'channel key derived');
@@ -1102,6 +1139,7 @@ function onDisconnected() {
 
 function disconnect() {
   lastPeerId = null; // manual disconnect — don't auto-reconnect
+  clearLastPeer();
   stopHeartbeat();
   stopTgPolling();
   tgMode = false;
