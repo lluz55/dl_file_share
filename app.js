@@ -585,6 +585,8 @@ function applyTgConfiguredUI() {
     const grpInp = document.getElementById('tg-group-input');
     if (grpInp && !grpInp.value.trim()) grpInp.value = String(tgGroupId);
     completeTgStep(3, String(tgGroupId));
+    // Start background group watcher so this peer receives files even before entering tgMode
+    if (!tgAbortCtrl) startTgPolling();
   } else {
     activateTgStep(3);
   }
@@ -605,6 +607,8 @@ async function saveTgGroupFromInput() {
   tgGroupId = val;
   await saveTgGroupId(tgGroupId);
   completeTgStep(3, String(tgGroupId));
+  // Start background watcher now that the group is configured
+  if (!tgAbortCtrl) startTgPolling();
   updateQR();
   updateTgBtnVisibility();
   debugLog('info', `TG group relay saved: ${tgGroupId}`);
@@ -646,7 +650,8 @@ async function startTgPolling() {
   const signal = tgAbortCtrl.signal;
   debugLog('info', `TG polling started · offset=${tgPollOffset}`);
 
-  while (tgMode) {
+  // Poll while in TG relay mode OR while a group is configured for background receive
+  while (tgMode || tgGroupId) {
     try {
       const updates = await tgApi('getUpdates', { offset: tgPollOffset, timeout: 25, limit: 10 }, signal);
       for (const u of updates) {
@@ -656,7 +661,7 @@ async function startTgPolling() {
     } catch (e) {
       if (e.name === 'AbortError') break;
       debugLog('error', `TG poll: ${e.message}`);
-      if (tgMode) await new Promise(r => setTimeout(r, 3000));
+      if (tgMode || tgGroupId) await new Promise(r => setTimeout(r, 3000));
     }
   }
   debugLog('info', 'TG polling stopped');
@@ -671,18 +676,21 @@ async function handleTgUpdate(update) {
   const msg = update.message || update.channel_post;
   if (!msg) return;
 
-  // When a relay group/channel is configured, only process messages from it.
-  // Without a group, fall back to filtering by peer's personal chat (legacy path —
-  // getUpdates does not return bot→user messages, so downloads won't trigger automatically).
   const expectedChatId = tgGroupId || peerTgChatId;
   if (expectedChatId && msg.chat.id !== expectedChatId) return;
-  if (!channelKey) return;
 
   try {
     if (msg.text) {
       const envelope = JSON.parse(msg.text);
       if (!envelope.relay || envelope.v !== 1) return;
-      if (envelope.from === myId) return;  // ignore own relay messages echoed back from group
+      if (envelope.from === myId) return;
+      // Derive channelKey on-the-fly if P2P never opened (peer switched to TG without ICE handshake)
+      if (!channelKey && envelope.from) {
+        channelKey = await deriveKey([myId, envelope.from].sort().join(':'), SALT_CHANNEL);
+        if (!lastPeerId) lastPeerId = envelope.from;
+        debugLog('info', `channelKey derived from TG envelope · peer=${envelope.from}`);
+      }
+      if (!channelKey) return;
       const data = JSON.parse(await decryptStr(channelKey, envelope.payload));
       await handleData(data, true);
     }
@@ -690,7 +698,14 @@ async function handleTgUpdate(update) {
     if (msg.document) {
       const caption = JSON.parse(msg.caption || '{}');
       if (!caption.relay || caption.v !== 1) return;
-      if (caption.from === myId) return;  // ignore own file echoed back from group
+      if (caption.from === myId) return;
+      // Derive channelKey from caption.from if not yet available
+      if (!channelKey && caption.from) {
+        channelKey = await deriveKey([myId, caption.from].sort().join(':'), SALT_CHANNEL);
+        if (!lastPeerId) lastPeerId = caption.from;
+        debugLog('info', `channelKey derived from TG caption · peer=${caption.from}`);
+      }
+      if (!channelKey) return;
 
       const fileInfo = await tgApi('getFile', { file_id: msg.document.file_id });
       const res      = await fetch(`https://api.telegram.org/file/bot${tgToken}/${fileInfo.file_path}`);
@@ -769,7 +784,7 @@ async function switchToTgMode() {
     }
   }
 
-  const pid = lastPeerId || connectTarget || document.getElementById('peer-input').value.trim();
+  const pid = lastPeerId || connectTarget || (conn && conn.peer) || document.getElementById('peer-input').value.trim();
   if (!pid)                    { showToast('Informe o ID do peer antes de usar o relay Telegram.'); return; }
   if (!tgToken || !myTgChatId) { showToast('Configure o Telegram antes de ativar o relay.'); return; }
   if (!tgGroupId && !peerTgChatId) { showToast('Informe o ID do grupo relay ou o chat ID do peer.'); return; }
@@ -1049,7 +1064,8 @@ function hookICE(c) {
       if (pc.iceConnectionState === 'failed') {
         debugLog('error', 'ICE failed — NAT traversal blocked; TURN server needed');
         showToast('Falha ICE: sem rota direta entre os dispositivos');
-        if (tgToken && myTgChatId && peerTgChatId && !tgMode) {
+        if (tgToken && myTgChatId && (peerTgChatId || tgGroupId) && !tgMode) {
+          if (!lastPeerId && conn && conn.peer) lastPeerId = conn.peer;
           setTimeout(switchToTgMode, 1000);
         }
       }
@@ -1069,7 +1085,8 @@ function setupConn() {
   const _connTimeout = setTimeout(() => {
     debugLog('error', 'connection timeout (20s) — ICE negotiation stalled');
     showToast('Tempo esgotado: verifique a rede ou bloqueio de firewall');
-    if (tgToken && myTgChatId && peerTgChatId && !tgMode) {
+    if (tgToken && myTgChatId && (peerTgChatId || tgGroupId) && !tgMode) {
+      if (!lastPeerId && conn && conn.peer) lastPeerId = conn.peer;
       setTimeout(switchToTgMode, 500);
     }
   }, 20000);
@@ -1120,7 +1137,12 @@ function setupConn() {
 function onDisconnected() {
   debugLog('info', 'state reset · waiting for connection');
   stopHeartbeat();
-  stopTgPolling();
+  // Keep background group polling alive if a relay group is configured
+  if (tgGroupId) {
+    if (!tgAbortCtrl) startTgPolling();  // restart watcher if it stopped
+  } else {
+    stopTgPolling();
+  }
   connectTarget  = null;
   connectRetries = 0;
   tgMode         = false;
