@@ -14,17 +14,17 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg:           #F6F5F1;
-      --surface:      #FFFFFF;
-      --border:       #E5E3DE;
-      --border-hover: #C8C6BF;
-      --text:         #1A1918;
-      --muted:        #8A8880;
-      --accent:       #C44B00;
-      --accent-dim:   rgba(196,75,0,0.07);
-      --green:        #1A6840;
-      --green-dim:    rgba(26,104,64,0.08);
-      --amber:        #A06000;
+      --bg:           #111110;
+      --surface:      #1C1B1A;
+      --border:       #2C2B2A;
+      --border-hover: #3D3C3A;
+      --text:         #EDECE8;
+      --muted:        #6A6866;
+      --accent:       #E05A10;
+      --accent-dim:   rgba(224,90,16,0.13);
+      --green:        #2DBD74;
+      --green-dim:    rgba(45,189,116,0.12);
+      --amber:        #D08020;
       --r:            12px;
       --r-sm:         8px;
     }
@@ -173,8 +173,8 @@
     }
 
     .qr-frame {
-      width: 152px;
-      height: 152px;
+      width: 120px;
+      height: 120px;
       border-radius: 10px;
       overflow: hidden;
       background: #fff;
@@ -546,6 +546,7 @@
       white-space: nowrap;
       max-width: 340px;
       text-align: center;
+      color: var(--bg);
     }
     .toast.show {
       opacity: 1;
@@ -578,7 +579,7 @@
             <div class="qr-placeholder">…</div>
           </div>
         </div>
-        <p class="qr-hint">Escaneie com o outro dispositivo<br>para conectar diretamente</p>
+        <p class="qr-hint">Escaneie para abrir o link<br>com conexão direta embutida</p>
       </div>
     </div>
 
@@ -670,14 +671,15 @@
   // ────────────────────────────────────────────────────────────
   // State
   // ────────────────────────────────────────────────────────────
-  let peer        = null;
-  let conn        = null;
-  let myId        = null;
-  let storageKey  = null;
-  let channelKey  = null;
-  let incoming    = {};   // fileId → { meta, chunks[], received }
-  let sendQueue   = [];
-  let isSending   = false;
+  let peer             = null;
+  let conn             = null;
+  let myId             = null;
+  let storageKey       = null;
+  let channelKey       = null;
+  let incoming         = {};   // fileId → { meta, chunks[], received }
+  let sendQueue        = [];
+  let isSending        = false;
+  let reconnectAttempts = 0;
 
   // ────────────────────────────────────────────────────────────
   // Crypto helpers
@@ -835,6 +837,7 @@
     peer = new Peer(savedId, { debug: 0 });
 
     peer.on('open', async id => {
+      reconnectAttempts = 0;
       myId = id;
       localStorage.setItem(LS_PEER_ID, id);
 
@@ -852,9 +855,9 @@
       try {
         new QRCode(qrEl, {
           text: url,
-          width: 152,
-          height: 152,
-          colorDark: '#1A1918',
+          width: 120,
+          height: 120,
+          colorDark: '#111110',
           colorLight: '#FFFFFF',
           correctLevel: QRCode.CorrectLevel.M
         });
@@ -878,21 +881,34 @@
     });
 
     peer.on('disconnected', () => {
-      setStatus('error', 'desconectado do servidor');
-      setTimeout(() => peer.reconnect(), 3000);
+      reconnectAttempts++;
+      setStatus('error', `sem servidor · tentativa ${reconnectAttempts}`);
+      setTimeout(() => {
+        if (peer && !peer.destroyed) peer.reconnect();
+      }, 3000);
     });
 
     peer.on('error', err => {
       if (err.type === 'unavailable-id') {
-        // Mnemonic collision (extremely rare) — regenerate and retry
         localStorage.removeItem(LS_PEER_ID);
         peer.destroy();
         initPeer();
         return;
       }
+
+      const serverErrors = ['network', 'server-error', 'socket-error', 'socket-closed'];
+      if (serverErrors.includes(err.type)) {
+        const detail = err.message
+          ? err.message.split('\n')[0].slice(0, 50)
+          : err.type;
+        setStatus('error', detail);
+        showToast(`Erro de rede: ${err.type}`);
+        return;
+      }
+
       const msg = err.type === 'peer-unavailable'
         ? 'ID não encontrado'
-        : err.type || 'erro de conexão';
+        : err.message || err.type || 'erro de conexão';
       setStatus('ready', 'pronto');
       showToast('Erro: ' + msg);
       document.getElementById('btn-connect').disabled = false;
