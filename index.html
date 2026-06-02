@@ -993,7 +993,19 @@
   // ────────────────────────────────────────────────────────────
   async function initPeer() {
     const savedId = localStorage.getItem(LS_PEER_ID) || generateMnemonicId();
-    peer = new Peer(savedId, { debug: 1 });
+    peer = new Peer(savedId, {
+      debug: 1,
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302'  },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' },
+          { urls: 'stun:stun.cloudflare.com:3478'  },
+        ]
+      }
+    });
 
     peer.on('open', async id => {
       reconnectAttempts = 0;
@@ -1097,7 +1109,33 @@
   }
 
   function setupConn() {
+    // Hook into the underlying RTCPeerConnection for ICE diagnostics
+    setTimeout(() => {
+      const pc = conn && conn.peerConnection;
+      if (!pc) { debugLog('error', 'peerConnection not available'); return; }
+
+      pc.addEventListener('iceconnectionstatechange', () => {
+        debugLog('conn', `ICE → ${pc.iceConnectionState}`);
+        if (pc.iceConnectionState === 'failed') {
+          debugLog('error', 'ICE failed — NAT/firewall blocking P2P; a TURN server is needed');
+          showToast('Falha ICE: dispositivos não conseguiram se conectar diretamente');
+        }
+      });
+      pc.addEventListener('icegatheringstatechange', () => {
+        debugLog('conn', `ICE gathering → ${pc.iceGatheringState}`);
+      });
+      pc.addEventListener('connectionstatechange', () => {
+        debugLog('conn', `RTC → ${pc.connectionState}`);
+      });
+    }, 0);
+
+    const _connTimeout = setTimeout(() => {
+      debugLog('error', 'connection timeout (20s) — ICE negotiation stalled');
+      showToast('Tempo esgotado: verifique se ambos estão na mesma rede ou se há bloqueio de firewall');
+    }, 20000);
+
     conn.on('open', async () => {
+      clearTimeout(_connTimeout);
       const pid = conn.peer;
       debugLog('conn', `open · peer=${pid}`);
       channelKey = await deriveKey([myId, pid].sort().join(':'), SALT_CHANNEL);
@@ -1116,10 +1154,12 @@
     conn.on('data', handleData);
 
     conn.on('close', () => {
+      clearTimeout(_connTimeout);
       debugLog('conn', 'closed');
       onDisconnected();
     });
     conn.on('error', e => {
+      clearTimeout(_connTimeout);
       debugLog('error', `conn · ${e.message || e.type || String(e)}`);
       onDisconnected();
     });
