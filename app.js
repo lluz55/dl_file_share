@@ -8,9 +8,10 @@ const SALT_CHANNEL  = new TextEncoder().encode('relay-channel-v1');
 const LS_PEER_ID    = 'relay_peer_id';
 const LS_HISTORY    = 'relay_history';
 const LS_THEME      = 'relay_theme';
-const LS_TG_TOKEN   = 'relay_tg_token';
-const LS_TG_CHAT_ID = 'relay_tg_chat_id';
-const SALT_TG       = new TextEncoder().encode('relay-tg-v1');
+const LS_TG_TOKEN    = 'relay_tg_token';
+const LS_TG_CHAT_ID  = 'relay_tg_chat_id';
+const LS_TG_GROUP_ID = 'relay_tg_group_id';
+const SALT_TG        = new TextEncoder().encode('relay-tg-v1');
 const TG_MAX_FILE   = 50 * 1024 * 1024; // 50 MB
 const MAX_HISTORY   = 200;
 const MAX_DEBUG     = 120;
@@ -51,6 +52,7 @@ const PONG_TIMEOUT    = 8000;
 let tgToken           = null;
 let myTgChatId        = null;
 let peerTgChatId      = null;
+let tgGroupId         = null;  // shared group/channel for relay (enables getUpdates to work)
 let tgMode            = false;
 let tgPollOffset      = 0;
 let tgAbortCtrl       = null;
@@ -336,6 +338,19 @@ async function loadTgChatId() {
   catch { return null; }
 }
 
+async function saveTgGroupId(groupId) {
+  if (!storageKey) return;
+  localStorage.setItem(LS_TG_GROUP_ID, await encryptStr(storageKey, String(groupId)));
+}
+
+async function loadTgGroupId() {
+  if (!storageKey) return null;
+  const raw = localStorage.getItem(LS_TG_GROUP_ID);
+  if (!raw) return null;
+  try   { return parseInt(await decryptStr(storageKey, raw)); }
+  catch { return null; }
+}
+
 // ────────────────────────────────────────────────────────────
 // Telegram — API
 // ────────────────────────────────────────────────────────────
@@ -361,6 +376,60 @@ async function tgApiForm(method, formData, signal = null) {
   const json = await res.json();
   if (!json.ok) throw new Error(json.description || `${method} falhou`);
   return json.result;
+}
+
+// ────────────────────────────────────────────────────────────
+// Telegram — wizard helpers
+// ────────────────────────────────────────────────────────────
+function _tgStep(n)  { return document.getElementById('tg-wstep-' + n); }
+function _tgBody(n)  { return document.getElementById('tg-wbody-' + n); }
+function _tgNum(n)   { return document.getElementById('tg-wnum-'  + n); }
+function _tgVal(n)   { return document.getElementById('tg-wval-'  + n); }
+
+function activateTgStep(n) {
+  const step = _tgStep(n), body = _tgBody(n);
+  if (!step) return;
+  step.classList.remove('tg-wstep--locked', 'tg-wstep--done');
+  if (body) body.style.display = '';
+}
+
+function completeTgStep(n, val) {
+  const step = _tgStep(n), body = _tgBody(n), num = _tgNum(n), valEl = _tgVal(n);
+  if (!step) return;
+  step.classList.remove('tg-wstep--locked');
+  step.classList.add('tg-wstep--done');
+  if (num)   num.textContent = '✓';
+  if (valEl && val) valEl.textContent = val;
+  if (body)  body.style.display = 'none';
+}
+
+function toggleTgStep(n) {
+  const step = _tgStep(n);
+  if (!step || step.classList.contains('tg-wstep--locked')) return;
+  const body = _tgBody(n);
+  if (body) body.style.display = body.style.display === 'none' ? '' : 'none';
+}
+
+function resetTgWizard() {
+  for (let i = 1; i <= 3; i++) {
+    const step = _tgStep(i), body = _tgBody(i), num = _tgNum(i), valEl = _tgVal(i);
+    if (!step) continue;
+    step.classList.remove('tg-wstep--done');
+    if (i === 1) {
+      step.classList.remove('tg-wstep--locked');
+      if (body) body.style.display = '';
+    } else {
+      step.classList.add('tg-wstep--locked');
+      if (body) body.style.display = 'none';
+    }
+    if (num)   num.textContent = String(i);
+    if (valEl) valEl.textContent = '';
+  }
+  const chatidRow = document.getElementById('tg-chatid-row');
+  if (chatidRow) chatidRow.style.display = 'none';
+  const resetBtn = document.getElementById('btn-tg-reset');
+  if (resetBtn) resetBtn.style.display = 'none';
+  document.getElementById('tg-connect-row').style.display = 'none';
 }
 
 // ────────────────────────────────────────────────────────────
@@ -404,14 +473,23 @@ async function configureTelegram() {
     debugLog('info', `TG bot: @${bot.username}`);
     await saveTgToken(token);
     tokenInput.value = '';
-    setTgMsg(`@${bot.username} configurado. Envie qualquer mensagem ao bot para vincular sua conta.`);
+    setTgMsg('');
+    completeTgStep(1, '@' + bot.username);
+    activateTgStep(2);
     await discoverTgChatId(bot.username);
   } catch (e) {
     debugLog('error', `TG config: ${e.message}`);
     setTgMsg('Token inválido: ' + e.message, true);
-    tgToken = prevToken; // restore previous valid token
+    tgToken = prevToken;
   }
   document.getElementById('btn-tg-config').disabled = false;
+}
+
+function setDiscoverMsg(msg, isDiscovering = false) {
+  const el = document.getElementById('tg-discover-msg');
+  if (!el) return;
+  el.innerHTML = msg;
+  el.className = 'tg-discover-status' + (isDiscovering ? ' discovering' : '');
 }
 
 async function discoverTgChatId(botUsername) {
@@ -422,7 +500,7 @@ async function discoverTgChatId(botUsername) {
     if (flush.length > 0) offset = flush[flush.length - 1].update_id + 1;
   } catch {}
 
-  setTgMsg(`Envie qualquer mensagem ao @${botUsername} no Telegram…`);
+  setDiscoverMsg(`Aguardando mensagem ao <strong>@${botUsername}</strong> no Telegram…`, true);
   _discoverAbortCtrl = new AbortController();
   const signal   = _discoverAbortCtrl.signal;
   const deadline = Date.now() + 120000;
@@ -438,7 +516,6 @@ async function discoverTgChatId(botUsername) {
           tgPollOffset = offset;
           await saveTgChatId(myTgChatId);
           _discoverAbortCtrl = null;
-          setTgMsg('');
           applyTgConfiguredUI();
           debugLog('info', `TG chat_id=${myTgChatId}`);
           return;
@@ -450,30 +527,67 @@ async function discoverTgChatId(botUsername) {
     }
   }
 
-  setTgMsg('Tempo esgotado. Envie uma mensagem ao bot e tente novamente.', true);
+  setDiscoverMsg('Tempo esgotado. Envie uma mensagem ao bot e tente novamente.');
   _discoverAbortCtrl = null;
 }
 
 function applyTgConfiguredUI() {
-  document.getElementById('tg-setup').style.display = 'none';
-  document.getElementById('tg-configured').style.display = '';
-  document.getElementById('tg-my-chat-id').textContent = String(myTgChatId);
+  // Mark step 1 done (token already set)
+  const tgStep1 = _tgStep(1);
+  if (tgStep1 && !tgStep1.classList.contains('tg-wstep--done')) {
+    completeTgStep(1, tgToken ? '●●●●●●' : '');
+  }
+
+  // Complete step 2 with chat ID
+  const chatIdEl = document.getElementById('tg-my-chat-id');
+  if (chatIdEl) chatIdEl.textContent = String(myTgChatId);
+  const chatidRow = document.getElementById('tg-chatid-row');
+  if (chatidRow) chatidRow.style.display = '';
+  setDiscoverMsg('');
+  completeTgStep(2, String(myTgChatId));
+
+  // Activate or complete step 3 depending on whether group is already saved
+  if (tgGroupId) {
+    const grpInp = document.getElementById('tg-group-input');
+    if (grpInp && !grpInp.value.trim()) grpInp.value = String(tgGroupId);
+    completeTgStep(3, String(tgGroupId));
+  } else {
+    activateTgStep(3);
+  }
+
+  // Show reset button and peer TG chat input in connect form
+  const resetBtn = document.getElementById('btn-tg-reset');
+  if (resetBtn) resetBtn.style.display = '';
   document.getElementById('tg-connect-row').style.display = '';
+
   updateQR();
   updateTgBtnVisibility();
+}
+
+async function saveTgGroupFromInput() {
+  const grpInp = document.getElementById('tg-group-input');
+  const val = grpInp && parseInt(grpInp.value.trim());
+  if (!val) { showToast('Informe um ID de grupo válido.'); return; }
+  tgGroupId = val;
+  await saveTgGroupId(tgGroupId);
+  completeTgStep(3, String(tgGroupId));
+  updateQR();
+  updateTgBtnVisibility();
+  debugLog('info', `TG group relay saved: ${tgGroupId}`);
+  showToast('Grupo relay salvo.');
 }
 
 function resetTelegram() {
   if (!confirm('Remover configuração do Telegram?')) return;
   localStorage.removeItem(LS_TG_TOKEN);
   localStorage.removeItem(LS_TG_CHAT_ID);
+  localStorage.removeItem(LS_TG_GROUP_ID);
   tgToken    = null;
   myTgChatId = null;
+  tgGroupId  = null;
   stopTgPolling();
-  document.getElementById('tg-setup').style.display = '';
-  document.getElementById('tg-configured').style.display = 'none';
   document.getElementById('tg-token-input').value = '';
-  document.getElementById('tg-connect-row').style.display = 'none';
+  resetTgWizard();
   updateQR();
   updateTgBtnVisibility();
 }
@@ -522,13 +636,19 @@ function stopTgPolling() {
 async function handleTgUpdate(update) {
   const msg = update.message || update.channel_post;
   if (!msg) return;
-  if (peerTgChatId && msg.chat.id !== peerTgChatId) return;
+
+  // When a relay group/channel is configured, only process messages from it.
+  // Without a group, fall back to filtering by peer's personal chat (legacy path —
+  // getUpdates does not return bot→user messages, so downloads won't trigger automatically).
+  const expectedChatId = tgGroupId || peerTgChatId;
+  if (expectedChatId && msg.chat.id !== expectedChatId) return;
   if (!channelKey) return;
 
   try {
     if (msg.text) {
       const envelope = JSON.parse(msg.text);
       if (!envelope.relay || envelope.v !== 1) return;
+      if (envelope.from === myId) return;  // ignore own relay messages echoed back from group
       const data = JSON.parse(await decryptStr(channelKey, envelope.payload));
       await handleData(data, true);
     }
@@ -536,6 +656,7 @@ async function handleTgUpdate(update) {
     if (msg.document) {
       const caption = JSON.parse(msg.caption || '{}');
       if (!caption.relay || caption.v !== 1) return;
+      if (caption.from === myId) return;  // ignore own file echoed back from group
 
       const fileInfo = await tgApi('getFile', { file_id: msg.document.file_id });
       const res      = await fetch(`https://api.telegram.org/file/bot${tgToken}/${fileInfo.file_path}`);
@@ -559,16 +680,20 @@ async function handleTgUpdate(update) {
 }
 
 async function tgSend(data) {
-  if (!channelKey || !peerTgChatId || !tgToken) return;
+  if (!channelKey || !tgToken) return;
+  const relayChatId = tgGroupId || peerTgChatId;
+  if (!relayChatId) return;
   const payload = await encryptStr(channelKey, JSON.stringify(data));
   await tgApi('sendMessage', {
-    chat_id: peerTgChatId,
+    chat_id: relayChatId,
     text: JSON.stringify({ relay: true, v: 1, from: myId, payload })
   });
 }
 
 async function tgSendFile(file) {
-  if (!channelKey || !peerTgChatId || !tgToken) return;
+  if (!channelKey || !tgToken) return;
+  const relayChatId = tgGroupId || peerTgChatId;
+  if (!relayChatId) return;
   if (file.size > TG_MAX_FILE) {
     showToast('Arquivo muito grande para relay Telegram (máx. 50 MB)');
     return;
@@ -585,14 +710,14 @@ async function tgSendFile(file) {
 
   const caption  = JSON.stringify({ relay: true, v: 1, from: myId, name: file.name, size: file.size });
   const formData = new FormData();
-  formData.append('chat_id', String(peerTgChatId));
+  formData.append('chat_id', String(relayChatId));
   formData.append('document', new Blob([encrypted], { type: 'application/octet-stream' }), file.name + '.enc');
   formData.append('caption', caption);
 
   await tgApiForm('sendDocument', formData);
   donProgress(fileId);
   await pushHistory({ type: 'file', name: file.name, size: file.size, direction: 'sent', timestamp: Date.now() });
-  debugLog('info', `TG file sent: ${file.name}`);
+  debugLog('info', `TG file sent: ${file.name} via ${tgGroupId ? 'group relay' : 'personal chat'}`);
 }
 
 async function switchToTgMode() {
@@ -601,11 +726,22 @@ async function switchToTgMode() {
     const inp = document.getElementById('tg-chat-input');
     if (inp && inp.value.trim()) peerTgChatId = parseInt(inp.value.trim()) || null;
   }
+  // Read relay group ID from input if not yet parsed
+  if (!tgGroupId) {
+    const grpInp = document.getElementById('tg-group-input');
+    if (grpInp && grpInp.value.trim()) {
+      tgGroupId = parseInt(grpInp.value.trim()) || null;
+      if (tgGroupId) await saveTgGroupId(tgGroupId);
+    }
+  }
 
   const pid = lastPeerId || connectTarget || document.getElementById('peer-input').value.trim();
   if (!pid)                    { showToast('Informe o ID do peer antes de usar o relay Telegram.'); return; }
   if (!tgToken || !myTgChatId) { showToast('Configure o Telegram antes de ativar o relay.'); return; }
-  if (!peerTgChatId)           { showToast('Informe o Telegram chat ID do peer.'); return; }
+  if (!tgGroupId && !peerTgChatId) { showToast('Informe o ID do grupo relay ou o chat ID do peer.'); return; }
+  if (!tgGroupId) {
+    showToast('Sem grupo relay: arquivos não serão baixados automaticamente. Configure um grupo para relay completo.');
+  }
 
   debugLog('info', `switching to TG relay · peer=${pid}`);
 
@@ -644,10 +780,12 @@ async function switchToTgMode() {
 }
 
 function updateTgBtnVisibility() {
-  const inp      = document.getElementById('tg-chat-input');
-  const chatReady = peerTgChatId || (inp && parseInt(inp.value.trim()));
-  const ready    = !!(tgToken && myTgChatId && chatReady && !tgMode);
-  const btn      = document.getElementById('btn-use-tg');
+  const chatInp   = document.getElementById('tg-chat-input');
+  const grpInp    = document.getElementById('tg-group-input');
+  const chatReady = peerTgChatId || (chatInp && parseInt(chatInp.value.trim()));
+  const grpReady  = tgGroupId || (grpInp && parseInt(grpInp.value.trim()));
+  const ready     = !!(tgToken && myTgChatId && (chatReady || grpReady) && !tgMode);
+  const btn       = document.getElementById('btn-use-tg');
   if (btn) btn.style.display = ready ? '' : 'none';
 }
 
@@ -656,7 +794,9 @@ function updateTgBtnVisibility() {
 // ────────────────────────────────────────────────────────────
 function buildQRUrl() {
   const base = `${location.origin}${location.pathname}?connect=${encodeURIComponent(myId)}`;
-  return myTgChatId ? base + `&tgchat=${myTgChatId}` : base;
+  let url = myTgChatId ? base + `&tgchat=${myTgChatId}` : base;
+  if (tgGroupId) url += `&tggroup=${tgGroupId}`;
+  return url;
 }
 
 function updateQR() {
@@ -706,9 +846,11 @@ async function initPeer() {
     renderHistory(h);
 
     // Load Telegram config (requires storageKey)
-    const savedToken  = await loadTgToken();
-    const savedChatId = await loadTgChatId();
+    const savedToken   = await loadTgToken();
+    const savedChatId  = await loadTgChatId();
+    const savedGroupId = await loadTgGroupId();
     if (savedToken)  { tgToken    = savedToken; debugLog('info', 'TG token loaded'); }
+    if (savedGroupId){ tgGroupId  = savedGroupId; debugLog('info', `TG group relay id=${tgGroupId}`); }
     if (savedChatId) {
       myTgChatId = savedChatId;
       applyTgConfiguredUI();
@@ -718,15 +860,23 @@ async function initPeer() {
     setStatus('ready', 'pronto');
 
     // Parse URL params
-    const p      = new URLSearchParams(location.search);
-    const cid    = p.get('connect');
-    const tgchat = p.get('tgchat');
+    const p       = new URLSearchParams(location.search);
+    const cid     = p.get('connect');
+    const tgchat  = p.get('tgchat');
+    const tggroup = p.get('tggroup');
     if (tgchat) {
       peerTgChatId = parseInt(tgchat);
       const inp = document.getElementById('tg-chat-input');
       if (inp) inp.value = tgchat;
-      updateTgBtnVisibility();
     }
+    if (tggroup) {
+      tgGroupId = parseInt(tggroup);
+      const grpInp = document.getElementById('tg-group-input');
+      if (grpInp) grpInp.value = tggroup;
+      await saveTgGroupId(tgGroupId);
+      debugLog('info', `TG group relay from URL: ${tgGroupId}`);
+    }
+    if (tgchat || tggroup) updateTgBtnVisibility();
     if (cid && cid !== id) {
       document.getElementById('peer-input').value = cid;
       connectToPeer();

@@ -62,27 +62,73 @@
         <div class="label" style="margin:0">relay telegram</div>
         <button class="btn-tg-guide" onclick="openTgGuide()" title="Como funciona">como usar?</button>
       </div>
+      <p class="tg-hint" style="margin-bottom:14px">Canal de fallback via bot quando o P2P falhar por bloqueio de NAT ou firewall.</p>
 
-      <div id="tg-setup">
-        <p class="tg-hint">Canal de fallback via bot quando o P2P falhar por bloqueio de NAT ou firewall.</p>
-        <div class="connect-row" style="margin-top:12px">
-          <input class="input" id="tg-token-input" type="password"
-                 placeholder="Token do bot (BotFather)"
-                 autocomplete="off" spellcheck="false"
-                 onkeydown="if(event.key==='Enter') configureTelegram()">
-          <button class="btn-primary" id="btn-tg-config" onclick="configureTelegram()">configurar</button>
-        </div>
-        <div class="tg-status-msg" id="tg-status-msg" style="display:none"></div>
-      </div>
+      <div id="tg-wizard">
 
-      <div id="tg-configured" style="display:none">
-        <div class="tg-info-row">
-          <span class="tg-info-label">meu chat ID</span>
-          <span class="tg-chat-id-value" id="tg-my-chat-id">—</span>
-          <button class="btn-copy" id="btn-tg-copy" onclick="copyTgChatId()">copiar</button>
+        <!-- Passo 1: Token -->
+        <div class="tg-wstep" id="tg-wstep-1">
+          <div class="tg-wstep-head" onclick="toggleTgStep(1)">
+            <div class="tg-wnum" id="tg-wnum-1">1</div>
+            <span class="tg-wstep-label">Criar bot e copiar token</span>
+            <span class="tg-wstep-val" id="tg-wval-1"></span>
+          </div>
+          <div class="tg-wbody" id="tg-wbody-1">
+            <p class="tg-hint">Obtenha o token no <strong>@BotFather</strong> (<span class="tg-code">/newbot</span>) e cole abaixo.</p>
+            <div class="connect-row">
+              <input class="input" id="tg-token-input" type="password"
+                     placeholder="123456789:AAF…"
+                     autocomplete="off" spellcheck="false"
+                     onkeydown="if(event.key==='Enter') configureTelegram()">
+              <button class="btn-primary" id="btn-tg-config" onclick="configureTelegram()">configurar</button>
+            </div>
+            <div class="tg-status-msg" id="tg-status-msg" style="display:none"></div>
+          </div>
         </div>
-        <button class="btn-ghost tg-reset-btn" onclick="resetTelegram()">remover configuração</button>
-      </div>
+
+        <!-- Passo 2: Vincular conta -->
+        <div class="tg-wstep tg-wstep--locked" id="tg-wstep-2">
+          <div class="tg-wstep-head" onclick="toggleTgStep(2)">
+            <div class="tg-wnum" id="tg-wnum-2">2</div>
+            <span class="tg-wstep-label">Vincular conta ao bot</span>
+            <span class="tg-wstep-val" id="tg-wval-2"></span>
+          </div>
+          <div class="tg-wbody" id="tg-wbody-2" style="display:none">
+            <div class="tg-discover-status" id="tg-discover-msg">
+              Abra o Telegram, encontre seu bot e envie qualquer mensagem (ex: <span class="tg-code">/start</span>).
+            </div>
+            <div class="tg-info-row" id="tg-chatid-row" style="display:none">
+              <span class="tg-info-label">meu chat ID</span>
+              <span class="tg-chat-id-value" id="tg-my-chat-id">—</span>
+              <button class="btn-copy" id="btn-tg-copy" onclick="copyTgChatId()">copiar</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Passo 3: Grupo relay -->
+        <div class="tg-wstep tg-wstep--locked" id="tg-wstep-3">
+          <div class="tg-wstep-head" onclick="toggleTgStep(3)">
+            <div class="tg-wnum" id="tg-wnum-3">3</div>
+            <span class="tg-wstep-label">Grupo relay (download automático)</span>
+            <span class="tg-wstep-val" id="tg-wval-3"></span>
+          </div>
+          <div class="tg-wbody" id="tg-wbody-3" style="display:none">
+            <p class="tg-hint">Crie um grupo no Telegram, adicione o bot como admin e cole o ID do grupo abaixo. Ambos os peers usam o <strong>mesmo grupo</strong>.</p>
+            <div class="connect-row" style="margin-top:4px">
+              <input class="input" id="tg-group-input" type="text"
+                     placeholder="-100xxxxxxxxxx"
+                     autocomplete="off" spellcheck="false"
+                     oninput="updateTgBtnVisibility()"
+                     onkeydown="if(event.key==='Enter') saveTgGroupFromInput()">
+              <button class="btn-ghost" onclick="saveTgGroupFromInput()">salvar</button>
+            </div>
+            <p class="tg-wstep-note">Sem grupo, o arquivo chega no Telegram mas o browser não baixa automaticamente. <span onclick="openTgGuide()" style="cursor:pointer;text-decoration:underline">Saiba mais.</span></p>
+          </div>
+        </div>
+
+      </div><!-- /#tg-wizard -->
+
+      <button class="btn-ghost tg-reset-btn" id="btn-tg-reset" onclick="resetTelegram()" style="display:none">remover configuração</button>
     </div>
 
     <!-- Telegram Guide Modal -->
@@ -97,14 +143,14 @@
         <div class="tg-step">
           <div class="tg-step-num">1</div>
           <div class="tg-step-body">
-            <div class="tg-step-title">Crie um bot no Telegram</div>
+            <div class="tg-step-title">Criar bot e copiar token</div>
             <div class="tg-step-desc">
-              Abra o Telegram e procure por <span class="tg-code">@BotFather</span>.
-              Envie <span class="tg-code">/newbot</span>, escolha um nome e username para o bot.
-              Ao final, o BotFather enviará um <strong>token</strong> no formato
-              <span class="tg-code">123456789:AAF…</span>.
+              Abra o Telegram, procure por <span class="tg-code">@BotFather</span> e envie
+              <span class="tg-code">/newbot</span>. Escolha nome e username — o BotFather
+              retorna um <strong>token</strong> no formato <span class="tg-code">123456789:AAF…</span>.
+              Cole o token no <strong>passo 1</strong> da card e clique em <strong>configurar</strong>.
             </div>
-            <div class="tg-step-note">O bot é seu — nenhum servidor externo tem acesso ao token.</div>
+            <div class="tg-step-note">O bot é seu — o token fica salvo criptografado no seu dispositivo, nunca em servidor externo.</div>
           </div>
         </div>
 
@@ -113,11 +159,14 @@
         <div class="tg-step">
           <div class="tg-step-num">2</div>
           <div class="tg-step-body">
-            <div class="tg-step-title">Configure o token aqui</div>
+            <div class="tg-step-title">Vincular conta ao bot</div>
             <div class="tg-step-desc">
-              Cole o token no campo "Token do bot" e clique em <strong>configurar</strong>.
-              O app valida o token e salva criptografado — ele nunca fica visível no armazenamento.
+              Após configurar o token, o app aguarda no <strong>passo 2</strong>.
+              Abra o Telegram, encontre seu bot pelo username e envie qualquer mensagem
+              (ex: <span class="tg-code">/start</span>). O app detecta automaticamente
+              seu <strong>chat ID</strong>.
             </div>
+            <div class="tg-step-note">A outra pessoa precisa fazer os passos 1 e 2 com o <em>mesmo token de bot</em>.</div>
           </div>
         </div>
 
@@ -126,12 +175,23 @@
         <div class="tg-step">
           <div class="tg-step-num">3</div>
           <div class="tg-step-body">
-            <div class="tg-step-title">Vincule sua conta ao bot</div>
+            <div class="tg-step-title">Criar grupo relay e configurar ID</div>
             <div class="tg-step-desc">
-              Após configurar, abra o Telegram, encontre seu bot pelo username e envie
-              qualquer mensagem (ex: <span class="tg-code">/start</span>).
-              O app detecta automaticamente seu <strong>chat ID</strong> — o número que
-              identifica você nesse bot.
+              No Telegram, crie um <strong>grupo</strong> e adicione seu bot como
+              administrador com permissão de enviar mensagens.
+              Obtenha o <strong>chat ID do grupo</strong> — número negativo como
+              <span class="tg-code">-1001234567890</span> — e cole no <strong>passo 3</strong> da card.
+            </div>
+            <div class="tg-step-note">
+              <strong>Por que o grupo é necessário?</strong> O Telegram Bot API só entrega notificações
+              de mensagens enviadas <em>por usuários ao bot</em>. Mensagens do bot para chats pessoais
+              não aparecem no polling. Num grupo onde o bot é admin, todos os posts chegam via
+              <span class="tg-code">getUpdates</span> — por isso o download automático funciona
+              apenas com o grupo configurado.
+              <br><br>
+              Dica para obter o ID: encaminhe uma mensagem do grupo para
+              <span class="tg-code">@userinfobot</span>.
+              Ambos os peers usam o mesmo grupo; o QR code já inclui o ID automaticamente.
             </div>
           </div>
         </div>
@@ -141,35 +201,14 @@
         <div class="tg-step">
           <div class="tg-step-num">4</div>
           <div class="tg-step-body">
-            <div class="tg-step-title">Compartilhe seu chat ID (e o do peer)</div>
+            <div class="tg-step-title">Conectar e usar</div>
             <div class="tg-step-desc">
-              Seu chat ID aparece na card após o passo 3. A <strong>outra pessoa</strong>
-              precisa fazer os mesmos passos 1–3 com o <em>mesmo token de bot</em> e te
-              enviar o chat ID dela.
+              Na seção <strong>conectar</strong>, preencha o ID do peer e o chat ID do peer.
+              Clique em <strong>conectar</strong> — o app tenta P2P primeiro e muda
+              automaticamente para o relay Telegram se o P2P falhar (NAT bloqueado, ICE failure).
+              Você também pode ativar o relay manualmente com <strong>via telegram</strong>.
             </div>
-            <div class="tg-step-note">
-              Se você usar o QR code para convidar alguém, o chat ID já vem
-              preenchido automaticamente na página do peer.
-            </div>
-          </div>
-        </div>
-
-        <div class="tg-step-divider"></div>
-
-        <div class="tg-step">
-          <div class="tg-step-num">5</div>
-          <div class="tg-step-body">
-            <div class="tg-step-title">Conecte com fallback automático</div>
-            <div class="tg-step-desc">
-              Na seção <strong>conectar</strong>, preencha o ID do peer e o
-              <strong>Telegram chat ID</strong> do peer. Clique em conectar normalmente —
-              o app tenta P2P primeiro. Se o P2P falhar (ICE failure, NAT bloqueado),
-              muda automaticamente para o relay Telegram.
-            </div>
-            <div class="tg-step-note">
-              Você também pode ativar o relay manualmente a qualquer momento
-              clicando em <strong>via telegram</strong> no formulário de conexão.
-            </div>
+            <div class="tg-step-note">Escaneie o QR code do peer para preencher ID e chat ID automaticamente.</div>
           </div>
         </div>
 
