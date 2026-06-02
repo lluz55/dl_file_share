@@ -777,15 +777,18 @@
   // ────────────────────────────────────────────────────────────
   // State
   // ────────────────────────────────────────────────────────────
-  let peer             = null;
-  let conn             = null;
-  let myId             = null;
-  let storageKey       = null;
-  let channelKey       = null;
-  let incoming         = {};   // fileId → { meta, chunks[], received }
-  let sendQueue        = [];
-  let isSending        = false;
+  let peer              = null;
+  let conn              = null;
+  let myId              = null;
+  let storageKey        = null;
+  let channelKey        = null;
+  let incoming          = {};   // fileId → { meta, chunks[], received }
+  let sendQueue         = [];
+  let isSending         = false;
   let reconnectAttempts = 0;
+  let connectTarget     = null; // current outbound target ID
+  let connectRetries    = 0;
+  const MAX_RETRIES     = 4;
 
   // ────────────────────────────────────────────────────────────
   // Crypto helpers
@@ -1048,8 +1051,21 @@
 
     peer.on('connection', c => {
       debugLog('peer', `incoming connection from ${c.peer}`);
-      if (conn) conn.close();
+
+      // Glare: we're also connecting outbound to the same peer — cancel ours
+      if (connectTarget === c.peer) {
+        debugLog('info', `glare with ${c.peer} — dropping outbound, using incoming`);
+        connectTarget  = null;
+        connectRetries = 0;
+      }
+
+      if (conn && conn !== c) conn.close();
       conn = c;
+
+      // Lock UI so user can't double-connect while waiting for channel to open
+      setStatus('connecting', 'aguardando canal…');
+      document.getElementById('btn-connect').disabled = true;
+
       setupConn();
     });
 
@@ -1086,9 +1102,20 @@
         return;
       }
 
+      if (err.type === 'peer-unavailable' && connectTarget && connectRetries < MAX_RETRIES) {
+        connectRetries++;
+        const delay = connectRetries * 2000;
+        debugLog('conn', `peer unavailable — retry ${connectRetries}/${MAX_RETRIES} in ${delay / 1000}s`);
+        setStatus('connecting', `aguardando peer… ${connectRetries}/${MAX_RETRIES}`);
+        setTimeout(doConnect, delay);
+        return;
+      }
+
       const msg = err.type === 'peer-unavailable'
-        ? 'ID não encontrado'
+        ? `ID não encontrado após ${MAX_RETRIES + 1} tentativas`
         : err.message || err.type || 'erro de conexão';
+      connectTarget  = null;
+      connectRetries = 0;
       setStatus('ready', 'pronto');
       showToast('Erro: ' + msg);
       document.getElementById('btn-connect').disabled = false;
@@ -1100,25 +1127,46 @@
     if (!tid || !peer || !myId) return;
     if (tid === myId) { showToast('Esse é o seu próprio ID.'); return; }
 
-    debugLog('conn', `connecting to ${tid}`);
-    setStatus('connecting', 'conectando…');
+    // Already have an open connection to this peer — ignore
+    if (conn && conn.open && conn.peer === tid) {
+      debugLog('info', `already connected to ${tid}`);
+      return;
+    }
+
+    connectTarget  = tid;
+    connectRetries = 0;
+    doConnect();
+  }
+
+  function doConnect() {
+    const tid = connectTarget;
+    if (!tid || !peer || !myId) return;
+
+    const label = connectRetries > 0 ? ` (tentativa ${connectRetries + 1}/${MAX_RETRIES + 1})` : '';
+    debugLog('conn', `connecting to ${tid}${label}`);
+    setStatus('connecting', connectRetries > 0 ? `reconectando… ${connectRetries + 1}` : 'conectando…');
     document.getElementById('btn-connect').disabled = true;
 
+    if (conn) { conn.close(); conn = null; }
     conn = peer.connect(tid, { reliable: true });
     setupConn();
   }
 
-  function setupConn() {
-    // Hook into the underlying RTCPeerConnection for ICE diagnostics
-    setTimeout(() => {
-      const pc = conn && conn.peerConnection;
-      if (!pc) { debugLog('error', 'peerConnection not available'); return; }
-
+  function hookICE(c) {
+    let attempts = 0;
+    (function tryHook() {
+      const pc = c.peerConnection;
+      if (!pc) {
+        if (++attempts <= 20) { setTimeout(tryHook, 200); return; }
+        debugLog('error', 'peerConnection never became available after 4s');
+        return;
+      }
+      debugLog('conn', `peerConnection available (attempt ${attempts})`);
       pc.addEventListener('iceconnectionstatechange', () => {
         debugLog('conn', `ICE → ${pc.iceConnectionState}`);
         if (pc.iceConnectionState === 'failed') {
-          debugLog('error', 'ICE failed — NAT/firewall blocking P2P; a TURN server is needed');
-          showToast('Falha ICE: dispositivos não conseguiram se conectar diretamente');
+          debugLog('error', 'ICE failed — NAT traversal blocked; TURN server needed');
+          showToast('Falha ICE: sem rota direta entre os dispositivos');
         }
       });
       pc.addEventListener('icegatheringstatechange', () => {
@@ -1127,15 +1175,21 @@
       pc.addEventListener('connectionstatechange', () => {
         debugLog('conn', `RTC → ${pc.connectionState}`);
       });
-    }, 0);
+    })();
+  }
+
+  function setupConn() {
+    hookICE(conn);
 
     const _connTimeout = setTimeout(() => {
       debugLog('error', 'connection timeout (20s) — ICE negotiation stalled');
-      showToast('Tempo esgotado: verifique se ambos estão na mesma rede ou se há bloqueio de firewall');
+      showToast('Tempo esgotado: verifique se ambos estão na mesma rede ou há bloqueio de firewall');
     }, 20000);
 
     conn.on('open', async () => {
       clearTimeout(_connTimeout);
+      connectTarget  = null;
+      connectRetries = 0;
       const pid = conn.peer;
       debugLog('conn', `open · peer=${pid}`);
       channelKey = await deriveKey([myId, pid].sort().join(':'), SALT_CHANNEL);
@@ -1167,6 +1221,8 @@
 
   function onDisconnected() {
     debugLog('info', 'state reset · waiting for connection');
+    connectTarget  = null;
+    connectRetries = 0;
     setStatus('ready', 'pronto');
     document.getElementById('connection-badge').classList.remove('visible');
     document.getElementById('connect-form').style.display = '';
