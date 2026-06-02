@@ -1401,6 +1401,10 @@ dropZone.addEventListener('drop', e => {
 // Boot
 // ────────────────────────────────────────────────────────────
 applyTheme(localStorage.getItem(LS_THEME) || 'dark');
+if (typeof RELAY_COMMIT !== 'undefined') {
+  const el = document.getElementById('commit-hash');
+  if (el) el.textContent = RELAY_COMMIT;
+}
 debugLog('info', 'relay starting…');
 
 if (typeof Peer === 'undefined') {

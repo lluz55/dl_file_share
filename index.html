@@ -11,13 +11,14 @@
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="version.js"></script>
 </head>
 <body>
   <div class="container">
 
     <!-- Header -->
     <header>
-      <div class="wordmark">relay<span>.</span></div>
+      <div class="wordmark">relay<span>.</span><span class="commit-hash" id="commit-hash"></span></div>
       <div class="header-controls">
         <button class="btn-icon" id="btn-debug" onclick="toggleDebug()" title="Debug">⌬</button>
         <button class="btn-icon" id="btn-theme" onclick="toggleTheme()" title="Alternar tema">◐</button>
