@@ -790,6 +790,12 @@
   let connectRetries    = 0;
   const MAX_RETRIES     = 4;
 
+  let lastPeerId        = null; // peer we were last connected to
+  let _heartbeatTimer   = null;
+  let _pongTimer        = null;
+  const PING_INTERVAL   = 15000; // ms between pings
+  const PONG_TIMEOUT    = 8000;  // ms to wait for pong before declaring dead
+
   // ────────────────────────────────────────────────────────────
   // Crypto helpers
   // ────────────────────────────────────────────────────────────
@@ -888,6 +894,44 @@
 
     while (log.children.length > MAX_DEBUG) log.removeChild(log.firstChild);
     log.scrollTop = log.scrollHeight;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Heartbeat — keeps NAT hole open and detects silent drops
+  // ────────────────────────────────────────────────────────────
+  function startHeartbeat() {
+    stopHeartbeat();
+    _heartbeatTimer = setInterval(() => {
+      if (!conn || !conn.open) { stopHeartbeat(); return; }
+      conn.send({ type: 'ping', ts: Date.now() });
+      _pongTimer = setTimeout(() => {
+        debugLog('error', `pong timeout — connection silently dropped`);
+        showToast('Conexão perdida (sem resposta)');
+        stopHeartbeat();
+        const target = lastPeerId;
+        onDisconnected();
+        if (target) scheduleReconnect(target);
+      }, PONG_TIMEOUT);
+    }, PING_INTERVAL);
+    debugLog('info', `heartbeat started (${PING_INTERVAL / 1000}s interval)`);
+  }
+
+  function stopHeartbeat() {
+    clearInterval(_heartbeatTimer);
+    clearTimeout(_pongTimer);
+    _heartbeatTimer = null;
+    _pongTimer = null;
+  }
+
+  function scheduleReconnect(target, delay = 2000) {
+    debugLog('info', `reconnecting to ${target} in ${delay / 1000}s…`);
+    setStatus('connecting', 'reconectando…');
+    setTimeout(() => {
+      if (conn && conn.open) return; // already reconnected
+      connectTarget  = target;
+      connectRetries = 0;
+      doConnect();
+    }, delay);
   }
 
   // ────────────────────────────────────────────────────────────
@@ -1191,9 +1235,11 @@
       connectTarget  = null;
       connectRetries = 0;
       const pid = conn.peer;
+      lastPeerId = pid;
       debugLog('conn', `open · peer=${pid}`);
       channelKey = await deriveKey([myId, pid].sort().join(':'), SALT_CHANNEL);
       debugLog('info', 'channel key derived');
+      startHeartbeat();
 
       setStatus('connected', 'conectado');
 
@@ -1209,18 +1255,25 @@
 
     conn.on('close', () => {
       clearTimeout(_connTimeout);
+      stopHeartbeat();
       debugLog('conn', 'closed');
+      const target = lastPeerId;
       onDisconnected();
+      if (target) scheduleReconnect(target);
     });
     conn.on('error', e => {
       clearTimeout(_connTimeout);
+      stopHeartbeat();
       debugLog('error', `conn · ${e.message || e.type || String(e)}`);
+      const target = lastPeerId;
       onDisconnected();
+      if (target) scheduleReconnect(target);
     });
   }
 
   function onDisconnected() {
     debugLog('info', 'state reset · waiting for connection');
+    stopHeartbeat();
     connectTarget  = null;
     connectRetries = 0;
     setStatus('ready', 'pronto');
@@ -1236,6 +1289,8 @@
   }
 
   function disconnect() {
+    lastPeerId = null; // manual disconnect — don't auto-reconnect
+    stopHeartbeat();
     if (conn) { conn.close(); }
     onDisconnected();
   }
@@ -1245,6 +1300,19 @@
   // ────────────────────────────────────────────────────────────
   async function handleData(data) {
     try {
+      if (data.type === 'ping') {
+        conn.send({ type: 'pong', ts: data.ts });
+        return;
+      }
+
+      if (data.type === 'pong') {
+        const rtt = Date.now() - data.ts;
+        debugLog('info', `pong · rtt=${rtt}ms`);
+        clearTimeout(_pongTimer);
+        _pongTimer = null;
+        return;
+      }
+
       if (data.type === 'file-meta') {
         incoming[data.fileId] = {
           meta: data,
