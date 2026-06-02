@@ -29,6 +29,20 @@
       --r-sm:         8px;
     }
 
+    [data-theme="light"] {
+      --bg:           #F6F5F1;
+      --surface:      #FFFFFF;
+      --border:       #E5E3DE;
+      --border-hover: #C8C6BF;
+      --text:         #1A1918;
+      --muted:        #8A8880;
+      --accent:       #C44B00;
+      --accent-dim:   rgba(196,75,0,0.07);
+      --green:        #1A6840;
+      --green-dim:    rgba(26,104,64,0.08);
+      --amber:        #A06000;
+    }
+
     html { background: var(--bg); }
 
     body {
@@ -58,6 +72,26 @@
       justify-content: space-between;
       padding-bottom: 4px;
     }
+
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .btn-icon {
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 4px 7px;
+      border-radius: 6px;
+      transition: color 0.15s, background 0.15s;
+      line-height: 1;
+    }
+    .btn-icon:hover        { color: var(--text); background: var(--border); }
+    .btn-icon.active       { color: var(--accent); }
 
     .wordmark {
       font-size: 17px;
@@ -552,6 +586,61 @@
       opacity: 1;
       transform: translateX(-50%) translateY(0);
     }
+
+    /* ── Debug panel ───────────────────────────────────── */
+    .debug-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      overflow: hidden;
+    }
+
+    .debug-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .debug-log {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      padding: 10px 14px;
+      max-height: 220px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .debug-entry {
+      display: flex;
+      gap: 10px;
+      line-height: 1.55;
+    }
+
+    .debug-time { color: var(--muted); flex-shrink: 0; }
+
+    .debug-tag {
+      flex-shrink: 0;
+      font-weight: 500;
+      min-width: 36px;
+      text-align: right;
+    }
+    .debug-tag.peer  { color: var(--amber); }
+    .debug-tag.conn  { color: var(--green); }
+    .debug-tag.error { color: var(--accent); }
+    .debug-tag.info  { color: var(--muted); }
+
+    .debug-msg { color: var(--text); word-break: break-all; }
+
+    .debug-empty {
+      color: var(--muted);
+      text-align: center;
+      padding: 20px 0;
+      font-size: 11.5px;
+    }
   </style>
 </head>
 <body>
@@ -560,11 +649,26 @@
     <!-- Header -->
     <header>
       <div class="wordmark">relay<span>.</span></div>
-      <div class="status">
-        <div class="status-dot" id="status-dot"></div>
-        <span id="status-text">iniciando</span>
+      <div class="header-controls">
+        <button class="btn-icon" id="btn-debug" onclick="toggleDebug()" title="Debug">⌬</button>
+        <button class="btn-icon" id="btn-theme" onclick="toggleTheme()" title="Alternar tema">◐</button>
+        <div class="status">
+          <div class="status-dot" id="status-dot"></div>
+          <span id="status-text">iniciando</span>
+        </div>
       </div>
     </header>
+
+    <!-- Debug Panel -->
+    <div class="debug-panel" id="debug-panel" style="display:none">
+      <div class="debug-header">
+        <span class="label" style="margin:0">debug · conexão</span>
+        <button class="btn-ghost" onclick="clearDebug()">limpar</button>
+      </div>
+      <div class="debug-log" id="debug-log">
+        <div class="debug-empty">nenhum evento ainda</div>
+      </div>
+    </div>
 
     <!-- My ID -->
     <div class="card">
@@ -656,7 +760,9 @@
   const SALT_CHANNEL  = new TextEncoder().encode('relay-channel-v1');
   const LS_PEER_ID    = 'relay_peer_id';
   const LS_HISTORY    = 'relay_history';
+  const LS_THEME      = 'relay_theme';
   const MAX_HISTORY   = 200;
+  const MAX_DEBUG     = 120;
 
   // ────────────────────────────────────────────────────────────
   // Mnemonic ID — 3 palavras em português, sem acentos
@@ -726,6 +832,54 @@
     const u8 = new Uint8Array(s.length);
     for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i);
     return u8;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Theme
+  // ────────────────────────────────────────────────────────────
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : '');
+    document.getElementById('btn-theme').textContent = theme === 'light' ? '◑' : '◐';
+    localStorage.setItem(LS_THEME, theme);
+  }
+
+  function toggleTheme() {
+    const cur = localStorage.getItem(LS_THEME) || 'dark';
+    applyTheme(cur === 'dark' ? 'light' : 'dark');
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Debug log
+  // ────────────────────────────────────────────────────────────
+  let _debugVisible = false;
+
+  function toggleDebug() {
+    _debugVisible = !_debugVisible;
+    document.getElementById('debug-panel').style.display = _debugVisible ? '' : 'none';
+    document.getElementById('btn-debug').classList.toggle('active', _debugVisible);
+  }
+
+  function clearDebug() {
+    document.getElementById('debug-log').innerHTML = '<div class="debug-empty">nenhum evento ainda</div>';
+  }
+
+  function debugLog(tag, msg) {
+    const log = document.getElementById('debug-log');
+    const empty = log.querySelector('.debug-empty');
+    if (empty) empty.remove();
+
+    const now = new Date();
+    const time = now.toTimeString().slice(0, 8) + '.' + String(now.getMilliseconds()).padStart(3, '0');
+
+    const entry = document.createElement('div');
+    entry.className = 'debug-entry';
+    entry.innerHTML = `<span class="debug-time">${time}</span>`
+      + `<span class="debug-tag ${tag}">${tag}</span>`
+      + `<span class="debug-msg">${esc(msg)}</span>`;
+    log.appendChild(entry);
+
+    while (log.children.length > MAX_DEBUG) log.removeChild(log.firstChild);
+    log.scrollTop = log.scrollHeight;
   }
 
   // ────────────────────────────────────────────────────────────
@@ -838,6 +992,7 @@
 
     peer.on('open', async id => {
       reconnectAttempts = 0;
+      debugLog('peer', `open · id=${id}`);
       myId = id;
       localStorage.setItem(LS_PEER_ID, id);
 
@@ -875,6 +1030,7 @@
     });
 
     peer.on('connection', c => {
+      debugLog('peer', `incoming connection from ${c.peer}`);
       if (conn) conn.close();
       conn = c;
       setupConn();
@@ -882,14 +1038,21 @@
 
     peer.on('disconnected', () => {
       reconnectAttempts++;
+      debugLog('peer', `disconnected from server · attempt ${reconnectAttempts} · retry in 3s`);
       setStatus('error', `sem servidor · tentativa ${reconnectAttempts}`);
       setTimeout(() => {
-        if (peer && !peer.destroyed) peer.reconnect();
+        if (peer && !peer.destroyed) {
+          debugLog('peer', `reconnecting… (attempt ${reconnectAttempts})`);
+          peer.reconnect();
+        }
       }, 3000);
     });
 
     peer.on('error', err => {
+      debugLog('error', `type=${err.type} · ${err.message || '(no message)'}`);
+
       if (err.type === 'unavailable-id') {
+        debugLog('peer', 'id collision — regenerating');
         localStorage.removeItem(LS_PEER_ID);
         peer.destroy();
         initPeer();
@@ -920,6 +1083,7 @@
     if (!tid || !peer || !myId) return;
     if (tid === myId) { showToast('Esse é o seu próprio ID.'); return; }
 
+    debugLog('conn', `connecting to ${tid}`);
     setStatus('connecting', 'conectando…');
     document.getElementById('btn-connect').disabled = true;
 
@@ -930,7 +1094,9 @@
   function setupConn() {
     conn.on('open', async () => {
       const pid = conn.peer;
+      debugLog('conn', `open · peer=${pid}`);
       channelKey = await deriveKey([myId, pid].sort().join(':'), SALT_CHANNEL);
+      debugLog('info', 'channel key derived');
 
       setStatus('connected', 'conectado');
 
@@ -944,11 +1110,18 @@
 
     conn.on('data', handleData);
 
-    conn.on('close', onDisconnected);
-    conn.on('error', onDisconnected);
+    conn.on('close', () => {
+      debugLog('conn', 'closed');
+      onDisconnected();
+    });
+    conn.on('error', e => {
+      debugLog('error', `conn · ${e.message || e.type || String(e)}`);
+      onDisconnected();
+    });
   }
 
   function onDisconnected() {
+    debugLog('info', 'state reset · waiting for connection');
     setStatus('ready', 'pronto');
     document.getElementById('connection-badge').classList.remove('visible');
     document.getElementById('connect-form').style.display = '';
@@ -1177,6 +1350,8 @@
   // ────────────────────────────────────────────────────────────
   // Boot
   // ────────────────────────────────────────────────────────────
+  applyTheme(localStorage.getItem(LS_THEME) || 'dark');
+  debugLog('info', 'relay starting…');
   initPeer();
   </script>
 </body>
