@@ -864,12 +864,17 @@
   }
 
   function debugLog(tag, msg) {
-    const log = document.getElementById('debug-log');
-    const empty = log.querySelector('.debug-empty');
-    if (empty) empty.remove();
-
     const now = new Date();
     const time = now.toTimeString().slice(0, 8) + '.' + String(now.getMilliseconds()).padStart(3, '0');
+
+    // Always mirror to browser console
+    const fn = tag === 'error' ? console.error : console.log;
+    fn(`[relay][${tag}] ${msg}`);
+
+    const log = document.getElementById('debug-log');
+    if (!log) return;
+    const empty = log.querySelector('.debug-empty');
+    if (empty) empty.remove();
 
     const entry = document.createElement('div');
     entry.className = 'debug-entry';
@@ -988,7 +993,7 @@
   // ────────────────────────────────────────────────────────────
   async function initPeer() {
     const savedId = localStorage.getItem(LS_PEER_ID) || generateMnemonicId();
-    peer = new Peer(savedId, { debug: 0 });
+    peer = new Peer(savedId, { debug: 1 });
 
     peer.on('open', async id => {
       reconnectAttempts = 0;
@@ -1352,7 +1357,23 @@
   // ────────────────────────────────────────────────────────────
   applyTheme(localStorage.getItem(LS_THEME) || 'dark');
   debugLog('info', 'relay starting…');
-  initPeer();
+
+  if (typeof Peer === 'undefined') {
+    debugLog('error', 'PeerJS library not loaded — check network/CSP');
+    setStatus('error', 'biblioteca não carregou');
+    showToast('Erro: PeerJS não carregou. Verifique a conexão.');
+  } else {
+    try {
+      initPeer();
+    } catch (e) {
+      debugLog('error', `initPeer threw: ${e.message || e}`);
+      setStatus('error', 'falha ao iniciar');
+    }
+  }
+
+  window.addEventListener('unhandledrejection', e => {
+    debugLog('error', `unhandled promise rejection: ${e.reason}`);
+  });
   </script>
 </body>
 </html>
