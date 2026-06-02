@@ -364,6 +364,21 @@ async function tgApiForm(method, formData, signal = null) {
 }
 
 // ────────────────────────────────────────────────────────────
+// Telegram — guide modal
+// ────────────────────────────────────────────────────────────
+function openTgGuide() {
+  document.getElementById('tg-modal-backdrop').style.display = '';
+  document.getElementById('tg-modal').style.display = '';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeTgGuide() {
+  document.getElementById('tg-modal-backdrop').style.display = 'none';
+  document.getElementById('tg-modal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+// ────────────────────────────────────────────────────────────
 // Telegram — configuration UI
 // ────────────────────────────────────────────────────────────
 function setTgMsg(msg, isError = false) {
@@ -1179,4 +1194,8 @@ if (typeof Peer === 'undefined') {
 
 window.addEventListener('unhandledrejection', e => {
   debugLog('error', `unhandled promise rejection: ${e.reason}`);
+});
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeTgGuide();
 });
