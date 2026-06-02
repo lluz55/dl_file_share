@@ -500,31 +500,45 @@ async function discoverTgChatId(botUsername) {
     if (flush.length > 0) offset = flush[flush.length - 1].update_id + 1;
   } catch {}
 
-  setDiscoverMsg(`Aguardando mensagem ao <strong>@${botUsername}</strong> no Telegram…`, true);
+  const TIMEOUT_MS = 120000;
   _discoverAbortCtrl = new AbortController();
   const signal   = _discoverAbortCtrl.signal;
-  const deadline = Date.now() + 120000;
+  const deadline = Date.now() + TIMEOUT_MS;
 
-  while (Date.now() < deadline) {
-    try {
-      const updates = await tgApi('getUpdates', { offset, timeout: 20, limit: 10 }, signal);
-      for (const u of updates) {
-        offset = u.update_id + 1;
-        const msg = u.message || u.channel_post;
-        if (msg && msg.chat) {
-          myTgChatId   = msg.chat.id;
-          tgPollOffset = offset;
-          await saveTgChatId(myTgChatId);
-          _discoverAbortCtrl = null;
-          applyTgConfiguredUI();
-          debugLog('info', `TG chat_id=${myTgChatId}`);
-          return;
+  const tickMsg = () => {
+    const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    setDiscoverMsg(
+      `Aguardando mensagem ao <strong>@${botUsername}</strong> no Telegram… ${remaining}s`,
+      true
+    );
+  };
+  tickMsg();
+  const tickInterval = setInterval(tickMsg, 1000);
+
+  try {
+    while (Date.now() < deadline) {
+      try {
+        const updates = await tgApi('getUpdates', { offset, timeout: 20, limit: 10 }, signal);
+        for (const u of updates) {
+          offset = u.update_id + 1;
+          const msg = u.message || u.channel_post;
+          if (msg && msg.chat) {
+            myTgChatId   = msg.chat.id;
+            tgPollOffset = offset;
+            await saveTgChatId(myTgChatId);
+            _discoverAbortCtrl = null;
+            applyTgConfiguredUI();
+            debugLog('info', `TG chat_id=${myTgChatId}`);
+            return;
+          }
         }
+      } catch (e) {
+        if (e.name === 'AbortError') return;
+        await new Promise(r => setTimeout(r, 3000));
       }
-    } catch (e) {
-      if (e.name === 'AbortError') return;
-      await new Promise(r => setTimeout(r, 3000));
     }
+  } finally {
+    clearInterval(tickInterval);
   }
 
   setDiscoverMsg('Tempo esgotado. Envie uma mensagem ao bot e tente novamente.');
