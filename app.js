@@ -5,16 +5,11 @@ const CHUNK_SIZE    = 32768; // 32 KB
 const PBKDF2_ITER   = 60000;
 const SALT_STORAGE  = new TextEncoder().encode('relay-storage-v1');
 const SALT_CHANNEL  = new TextEncoder().encode('relay-channel-v1');
-const LS_PEER_ID      = 'relay_peer_id';
-const LS_HISTORY      = 'relay_history';
-const LS_THEME        = 'relay_theme';
-const LS_LAST_PEER    = 'relay_last_peer';
-const LS_PEER_TG_CHAT = 'relay_peer_tg_chat';
-const LS_TG_TOKEN    = 'relay_tg_token';
-const LS_TG_CHAT_ID  = 'relay_tg_chat_id';
-const LS_TG_GROUP_ID = 'relay_tg_group_id';
-const SALT_TG        = new TextEncoder().encode('relay-tg-v1');
-const TG_MAX_FILE   = 50 * 1024 * 1024; // 50 MB
+const LS_PEER_ID    = 'relay_peer_id';
+const LS_HISTORY    = 'relay_history';
+const LS_THEME      = 'relay_theme';
+const LS_LAST_PEER  = 'relay_last_peer';
+const LS_RELAY_URL  = 'relay_ws_url';
 const MAX_HISTORY   = 200;
 const MAX_DEBUG     = 120;
 
@@ -50,15 +45,12 @@ let _pongTimer        = null;
 const PING_INTERVAL   = 15000;
 const PONG_TIMEOUT    = 8000;
 
-// Telegram state
-let tgToken           = null;
-let myTgChatId        = null;
-let peerTgChatId      = null;
-let tgGroupId         = null;  // shared group/channel for relay (enables getUpdates to work)
-let tgMode            = false;
-let tgPollOffset      = 0;
-let tgAbortCtrl       = null;
-let _discoverAbortCtrl = null;
+// Relay state
+let relayWs                 = null;
+let relayMode               = false;
+let relayUrl                = null;
+let _relayReconnectTimer    = null;
+let _relayReconnectAttempts = 0;
 
 // ────────────────────────────────────────────────────────────
 // Crypto helpers
@@ -317,536 +309,238 @@ async function clearHistory() {
 function persistLastPeer() {
   if (!lastPeerId) return;
   localStorage.setItem(LS_LAST_PEER, lastPeerId);
-  if (peerTgChatId) {
-    localStorage.setItem(LS_PEER_TG_CHAT, String(peerTgChatId));
-  } else {
-    localStorage.removeItem(LS_PEER_TG_CHAT);
-  }
 }
 
 function clearLastPeer() {
   localStorage.removeItem(LS_LAST_PEER);
-  localStorage.removeItem(LS_PEER_TG_CHAT);
 }
 
 // ────────────────────────────────────────────────────────────
-// Telegram — token storage (uses storageKey, available after peer opens)
+// WebSocket relay
 // ────────────────────────────────────────────────────────────
-async function saveTgToken(plain) {
-  if (!storageKey) return;
-  localStorage.setItem(LS_TG_TOKEN, await encryptStr(storageKey, plain));
+function saveRelayUrl(url) {
+  relayUrl = url;
+  localStorage.setItem(LS_RELAY_URL, url);
 }
 
-async function loadTgToken() {
-  if (!storageKey) return null;
-  const raw = localStorage.getItem(LS_TG_TOKEN);
-  if (!raw) return null;
-  try   { return await decryptStr(storageKey, raw); }
-  catch { return null; }
-}
+async function testRelayConnection() {
+  const urlInp = document.getElementById('relay-url-input');
+  const url    = urlInp ? urlInp.value.trim() : '';
+  if (!url) { showToast('Informe a URL do relay WebSocket.'); return; }
 
-async function saveTgChatId(chatId) {
-  if (!storageKey) return;
-  localStorage.setItem(LS_TG_CHAT_ID, await encryptStr(storageKey, String(chatId)));
-}
+  const msgEl = document.getElementById('relay-status-msg');
+  if (msgEl) { msgEl.textContent = 'testando conexão…'; msgEl.style.display = ''; msgEl.className = 'tg-status-msg'; }
 
-async function loadTgChatId() {
-  if (!storageKey) return null;
-  const raw = localStorage.getItem(LS_TG_CHAT_ID);
-  if (!raw) return null;
-  try   { return parseInt(await decryptStr(storageKey, raw)); }
-  catch { return null; }
-}
-
-async function saveTgGroupId(groupId) {
-  if (!storageKey) return;
-  localStorage.setItem(LS_TG_GROUP_ID, await encryptStr(storageKey, String(groupId)));
-}
-
-async function loadTgGroupId() {
-  if (!storageKey) return null;
-  const raw = localStorage.getItem(LS_TG_GROUP_ID);
-  if (!raw) return null;
-  try   { return parseInt(await decryptStr(storageKey, raw)); }
-  catch { return null; }
-}
-
-// ────────────────────────────────────────────────────────────
-// Telegram — API
-// ────────────────────────────────────────────────────────────
-async function tgApi(method, params = {}, signal = null) {
-  if (!tgToken) throw new Error('token não configurado');
-  const opts = {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params)
-  };
-  if (signal) opts.signal = signal;
-  const res  = await fetch(`https://api.telegram.org/bot${tgToken}/${method}`, opts);
-  const json = await res.json();
-  if (!json.ok) throw new Error(json.description || `${method} falhou`);
-  return json.result;
-}
-
-async function tgApiForm(method, formData, signal = null) {
-  if (!tgToken) throw new Error('token não configurado');
-  const opts = { method: 'POST', body: formData };
-  if (signal) opts.signal = signal;
-  const res  = await fetch(`https://api.telegram.org/bot${tgToken}/${method}`, opts);
-  const json = await res.json();
-  if (!json.ok) throw new Error(json.description || `${method} falhou`);
-  return json.result;
-}
-
-// ────────────────────────────────────────────────────────────
-// Telegram — wizard helpers
-// ────────────────────────────────────────────────────────────
-function _tgStep(n)  { return document.getElementById('tg-wstep-' + n); }
-function _tgBody(n)  { return document.getElementById('tg-wbody-' + n); }
-function _tgNum(n)   { return document.getElementById('tg-wnum-'  + n); }
-function _tgVal(n)   { return document.getElementById('tg-wval-'  + n); }
-
-function activateTgStep(n) {
-  const step = _tgStep(n), body = _tgBody(n);
-  if (!step) return;
-  step.classList.remove('tg-wstep--locked', 'tg-wstep--done');
-  if (body) body.style.display = '';
-}
-
-function completeTgStep(n, val) {
-  const step = _tgStep(n), body = _tgBody(n), num = _tgNum(n), valEl = _tgVal(n);
-  if (!step) return;
-  step.classList.remove('tg-wstep--locked');
-  step.classList.add('tg-wstep--done');
-  if (num)   num.textContent = '✓';
-  if (valEl && val) valEl.textContent = val;
-  if (body)  body.style.display = 'none';
-}
-
-function toggleTgStep(n) {
-  const step = _tgStep(n);
-  if (!step || step.classList.contains('tg-wstep--locked')) return;
-  const body = _tgBody(n);
-  if (body) body.style.display = body.style.display === 'none' ? '' : 'none';
-}
-
-function resetTgWizard() {
-  for (let i = 1; i <= 3; i++) {
-    const step = _tgStep(i), body = _tgBody(i), num = _tgNum(i), valEl = _tgVal(i);
-    if (!step) continue;
-    step.classList.remove('tg-wstep--done');
-    if (i === 1) {
-      step.classList.remove('tg-wstep--locked');
-      if (body) body.style.display = '';
-    } else {
-      step.classList.add('tg-wstep--locked');
-      if (body) body.style.display = 'none';
-    }
-    if (num)   num.textContent = String(i);
-    if (valEl) valEl.textContent = '';
+  try {
+    await new Promise((resolve, reject) => {
+      const ws = new WebSocket(url);
+      const t  = setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 6000);
+      ws.onopen  = () => { clearTimeout(t); ws.close(); resolve(); };
+      ws.onerror = () => { clearTimeout(t); reject(new Error('sem resposta')); };
+    });
+    if (msgEl) { msgEl.textContent = 'conectado com sucesso!'; }
+    saveRelayUrl(url);
+    const resetBtn = document.getElementById('btn-relay-reset');
+    if (resetBtn) resetBtn.style.display = '';
+    updateRelayBtnVisibility();
+    debugLog('info', `relay URL saved: ${url}`);
+  } catch (e) {
+    if (msgEl) { msgEl.textContent = 'Erro: ' + e.message; msgEl.className = 'tg-status-msg error'; }
   }
-  const chatidRow = document.getElementById('tg-chatid-row');
-  if (chatidRow) chatidRow.style.display = 'none';
-  const resetBtn = document.getElementById('btn-tg-reset');
+}
+
+function resetRelay() {
+  if (!confirm('Remover configuração do relay?')) return;
+  localStorage.removeItem(LS_RELAY_URL);
+  relayUrl = null;
+  disconnectRelay();
+  const urlInp = document.getElementById('relay-url-input');
+  if (urlInp) urlInp.value = '';
+  const msgEl = document.getElementById('relay-status-msg');
+  if (msgEl) msgEl.style.display = 'none';
+  const resetBtn = document.getElementById('btn-relay-reset');
   if (resetBtn) resetBtn.style.display = 'none';
-  document.getElementById('tg-connect-row').style.display = 'none';
+  updateRelayBtnVisibility();
 }
 
-// ────────────────────────────────────────────────────────────
-// Telegram — guide modal
-// ────────────────────────────────────────────────────────────
-function openTgGuide() {
-  document.getElementById('tg-modal-backdrop').style.display = '';
-  document.getElementById('tg-modal').style.display = '';
-  document.body.style.overflow = 'hidden';
+function updateRelayBtnVisibility() {
+  const btn = document.getElementById('btn-use-relay');
+  if (btn) btn.style.display = (relayUrl && !relayMode) ? '' : 'none';
 }
 
-function closeTgGuide() {
-  document.getElementById('tg-modal-backdrop').style.display = 'none';
-  document.getElementById('tg-modal').style.display = 'none';
-  document.body.style.overflow = '';
-}
+function connectRelay(url, peerId) {
+  return new Promise((resolve, reject) => {
+    let ws;
+    try { ws = new WebSocket(url); } catch (e) { reject(e); return; }
 
-// ────────────────────────────────────────────────────────────
-// Telegram — configuration UI
-// ────────────────────────────────────────────────────────────
-function setTgMsg(msg, isError = false) {
-  const el = document.getElementById('tg-status-msg');
-  if (!el) return;
-  el.textContent = msg;
-  el.style.display = msg ? '' : 'none';
-  el.className = 'tg-status-msg' + (isError ? ' error' : '');
-}
+    const timeout = setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 10000);
 
-async function configureTelegram() {
-  const tokenInput = document.getElementById('tg-token-input');
-  const token = tokenInput.value.trim();
-  if (!token) return;
+    ws.onopen = () => {
+      const roomId = [myId, peerId].sort().join(':');
+      ws.send(JSON.stringify({ type: 'join', room: roomId, peerId: myId }));
+    };
 
-  document.getElementById('btn-tg-config').disabled = true;
-  setTgMsg('validando token…');
-
-  const prevToken = tgToken;
-  tgToken = token;
-  try {
-    const bot = await tgApi('getMe');
-    debugLog('info', `TG bot: @${bot.username}`);
-    await saveTgToken(token);
-    tokenInput.value = '';
-    setTgMsg('');
-    completeTgStep(1, '@' + bot.username);
-    activateTgStep(2);
-    await discoverTgChatId(bot.username);
-  } catch (e) {
-    debugLog('error', `TG config: ${e.message}`);
-    setTgMsg('Token inválido: ' + e.message, true);
-    tgToken = prevToken;
-  }
-  document.getElementById('btn-tg-config').disabled = false;
-}
-
-function setDiscoverMsg(msg, isDiscovering = false) {
-  const el = document.getElementById('tg-discover-msg');
-  if (!el) return;
-  el.innerHTML = msg;
-  el.className = 'tg-discover-status' + (isDiscovering ? ' discovering' : '');
-}
-
-async function discoverTgChatId(botUsername) {
-  // Flush old updates: find latest update_id without long-polling
-  let offset = 0;
-  try {
-    const flush = await tgApi('getUpdates', { offset: -1, limit: 1 });
-    if (flush.length > 0) offset = flush[flush.length - 1].update_id + 1;
-  } catch {}
-
-  const TIMEOUT_MS = 120000;
-  _discoverAbortCtrl = new AbortController();
-  const signal   = _discoverAbortCtrl.signal;
-  const deadline = Date.now() + TIMEOUT_MS;
-
-  const tickMsg = () => {
-    const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-    setDiscoverMsg(
-      `Aguardando mensagem ao <strong>@${botUsername}</strong> no Telegram… ${remaining}s`,
-      true
-    );
-  };
-  tickMsg();
-  const tickInterval = setInterval(tickMsg, 1000);
-
-  try {
-    while (Date.now() < deadline) {
-      try {
-        const updates = await tgApi('getUpdates', { offset, timeout: 20, limit: 10 }, signal);
-        for (const u of updates) {
-          offset = u.update_id + 1;
-          const msg = u.message || u.channel_post;
-          if (msg && msg.chat) {
-            myTgChatId   = msg.chat.id;
-            tgPollOffset = offset;
-            await saveTgChatId(myTgChatId);
-            _discoverAbortCtrl = null;
-            applyTgConfiguredUI();
-            debugLog('info', `TG chat_id=${myTgChatId}`);
-            return;
-          }
-        }
-      } catch (e) {
-        if (e.name === 'AbortError') return;
-        await new Promise(r => setTimeout(r, 3000));
+    ws.onmessage = e => {
+      let msg;
+      try { msg = JSON.parse(e.data); } catch { return; }
+      if (msg.type === 'joined') {
+        clearTimeout(timeout);
+        relayWs = ws;
+        ws.onmessage = ev => handleRelayMessage(ev.data);
+        ws.onclose   = ()  => onRelayDisconnected(false);
+        ws.onerror   = ()  => onRelayDisconnected(false);
+        resolve(msg.peerPeerId);
+      } else if (msg.type === 'error') {
+        clearTimeout(timeout);
+        ws.close();
+        reject(new Error(msg.code || 'relay error'));
       }
-    }
-  } finally {
-    clearInterval(tickInterval);
-  }
-
-  setDiscoverMsg('Tempo esgotado. Envie uma mensagem ao bot e tente novamente.');
-  _discoverAbortCtrl = null;
-}
-
-function applyTgConfiguredUI() {
-  // Mark step 1 done (token already set)
-  const tgStep1 = _tgStep(1);
-  if (tgStep1 && !tgStep1.classList.contains('tg-wstep--done')) {
-    completeTgStep(1, tgToken ? '●●●●●●' : '');
-  }
-
-  // Complete step 2 with chat ID
-  const chatIdEl = document.getElementById('tg-my-chat-id');
-  if (chatIdEl) chatIdEl.textContent = String(myTgChatId);
-  const chatidRow = document.getElementById('tg-chatid-row');
-  if (chatidRow) chatidRow.style.display = '';
-  setDiscoverMsg('');
-  completeTgStep(2, String(myTgChatId));
-
-  // Activate or complete step 3 depending on whether group is already saved
-  if (tgGroupId) {
-    const grpInp = document.getElementById('tg-group-input');
-    if (grpInp && !grpInp.value.trim()) grpInp.value = String(tgGroupId);
-    completeTgStep(3, String(tgGroupId));
-    // Start background group watcher so this peer receives files even before entering tgMode
-    if (!tgAbortCtrl) startTgPolling();
-  } else {
-    activateTgStep(3);
-  }
-
-  // Show reset button and peer TG chat input in connect form
-  const resetBtn = document.getElementById('btn-tg-reset');
-  if (resetBtn) resetBtn.style.display = '';
-  document.getElementById('tg-connect-row').style.display = '';
-
-  updateQR();
-  updateTgBtnVisibility();
-}
-
-async function saveTgGroupFromInput() {
-  const grpInp = document.getElementById('tg-group-input');
-  const val = grpInp && parseInt(grpInp.value.trim());
-  if (!val) { showToast('Informe um ID de grupo válido.'); return; }
-  tgGroupId = val;
-  await saveTgGroupId(tgGroupId);
-  completeTgStep(3, String(tgGroupId));
-  // Start background watcher now that the group is configured
-  if (!tgAbortCtrl) startTgPolling();
-  updateQR();
-  updateTgBtnVisibility();
-  debugLog('info', `TG group relay saved: ${tgGroupId}`);
-  showToast('Grupo relay salvo.');
-}
-
-function resetTelegram() {
-  if (!confirm('Remover configuração do Telegram?')) return;
-  localStorage.removeItem(LS_TG_TOKEN);
-  localStorage.removeItem(LS_TG_CHAT_ID);
-  localStorage.removeItem(LS_TG_GROUP_ID);
-  tgToken    = null;
-  myTgChatId = null;
-  tgGroupId  = null;
-  stopTgPolling();
-  document.getElementById('tg-token-input').value = '';
-  resetTgWizard();
-  updateQR();
-  updateTgBtnVisibility();
-}
-
-function copyTgChatId() {
-  if (!myTgChatId) return;
-  navigator.clipboard.writeText(String(myTgChatId)).then(() => {
-    const btn = document.getElementById('btn-tg-copy');
-    const prev = btn.textContent;
-    btn.textContent = 'copiado!';
-    btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = prev; btn.classList.remove('copied'); }, 2200);
-  }).catch(() => showToast('Não foi possível copiar.'));
-}
-
-// ────────────────────────────────────────────────────────────
-// Telegram — relay
-// ────────────────────────────────────────────────────────────
-async function startTgPolling() {
-  stopTgPolling();
-  tgAbortCtrl = new AbortController();
-  const signal = tgAbortCtrl.signal;
-  debugLog('info', `TG polling started · offset=${tgPollOffset}`);
-
-  // Poll while in TG relay mode OR while a group is configured for background receive
-  while (tgMode || tgGroupId) {
-    try {
-      const updates = await tgApi('getUpdates', { offset: tgPollOffset, timeout: 25, limit: 10 }, signal);
-      for (const u of updates) {
-        tgPollOffset = u.update_id + 1;
-        await handleTgUpdate(u);
-      }
-    } catch (e) {
-      if (e.name === 'AbortError') break;
-      debugLog('error', `TG poll: ${e.message}`);
-      if (tgMode || tgGroupId) await new Promise(r => setTimeout(r, 3000));
-    }
-  }
-  debugLog('info', 'TG polling stopped');
-}
-
-function stopTgPolling() {
-  if (tgAbortCtrl)       { tgAbortCtrl.abort();       tgAbortCtrl       = null; }
-  if (_discoverAbortCtrl){ _discoverAbortCtrl.abort(); _discoverAbortCtrl = null; }
-}
-
-async function handleTgUpdate(update) {
-  const msg = update.message || update.channel_post;
-  if (!msg) return;
-
-  const expectedChatId = tgGroupId || peerTgChatId;
-  if (expectedChatId && msg.chat.id !== expectedChatId) return;
-
-  try {
-    if (msg.text) {
-      const envelope = JSON.parse(msg.text);
-      if (!envelope.relay || envelope.v !== 1) return;
-      if (envelope.from === myId) return;
-      // Derive channelKey on-the-fly if P2P never opened (peer switched to TG without ICE handshake)
-      if (!channelKey && envelope.from) {
-        channelKey = await deriveKey([myId, envelope.from].sort().join(':'), SALT_CHANNEL);
-        if (!lastPeerId) lastPeerId = envelope.from;
-        debugLog('info', `channelKey derived from TG envelope · peer=${envelope.from}`);
-      }
-      if (!channelKey) return;
-      const data = JSON.parse(await decryptStr(channelKey, envelope.payload));
-      await handleData(data, true);
-    }
-
-    if (msg.document) {
-      const caption = JSON.parse(msg.caption || '{}');
-      if (!caption.relay || caption.v !== 1) return;
-      if (caption.from === myId) return;
-      // Derive channelKey from caption.from if not yet available
-      if (!channelKey && caption.from) {
-        channelKey = await deriveKey([myId, caption.from].sort().join(':'), SALT_CHANNEL);
-        if (!lastPeerId) lastPeerId = caption.from;
-        debugLog('info', `channelKey derived from TG caption · peer=${caption.from}`);
-      }
-      if (!channelKey) return;
-
-      const fileInfo = await tgApi('getFile', { file_id: msg.document.file_id });
-      const res      = await fetch(`https://api.telegram.org/file/bot${tgToken}/${fileInfo.file_path}`);
-      if (!res.ok) throw new Error('download falhou');
-
-      const encBuf   = await res.arrayBuffer();
-      const decBytes = await decryptBytes(channelKey, new Uint8Array(encBuf));
-
-      const blob = new Blob([decBytes]);
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a');
-      a.href = url; a.download = caption.name; a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
-
-      await pushHistory({ type: 'file', name: caption.name, size: caption.size, direction: 'received', timestamp: Date.now() });
-      debugLog('info', `TG file received: ${caption.name} (${fmtBytes(caption.size)})`);
-    }
-  } catch (e) {
-    debugLog('error', `handleTgUpdate: ${e.message}`);
-  }
-}
-
-async function tgSend(data) {
-  if (!channelKey || !tgToken) return;
-  const relayChatId = tgGroupId || peerTgChatId;
-  if (!relayChatId) return;
-  const payload = await encryptStr(channelKey, JSON.stringify(data));
-  await tgApi('sendMessage', {
-    chat_id: relayChatId,
-    text: JSON.stringify({ relay: true, v: 1, from: myId, payload })
+    };
+    ws.onerror = () => { clearTimeout(timeout); reject(new Error('ws error')); };
+    ws.onclose = () => { clearTimeout(timeout); reject(new Error('ws closed')); };
   });
 }
 
-async function tgSendFile(file) {
-  if (!channelKey || !tgToken) return;
-  const relayChatId = tgGroupId || peerTgChatId;
-  if (!relayChatId) return;
-  if (file.size > TG_MAX_FILE) {
-    showToast('Arquivo muito grande para relay Telegram (máx. 50 MB)');
-    return;
+function disconnectRelay() {
+  clearTimeout(_relayReconnectTimer);
+  _relayReconnectTimer = null;
+  if (relayWs) {
+    relayWs.onclose = null;
+    relayWs.onerror = null;
+    relayWs.close();
+    relayWs = null;
   }
-
-  const fileId = uid();
-  makeProgressItem(fileId, file.name, file.size);
-  setProgress(fileId, 0.1);
-
-  const buf       = await file.arrayBuffer();
-  setProgress(fileId, 0.3);
-  const encrypted = await encryptBytes(channelKey, new Uint8Array(buf));
-  setProgress(fileId, 0.5);
-
-  const caption  = JSON.stringify({ relay: true, v: 1, from: myId, name: file.name, size: file.size });
-  const formData = new FormData();
-  formData.append('chat_id', String(relayChatId));
-  formData.append('document', new Blob([encrypted], { type: 'application/octet-stream' }), file.name + '.enc');
-  formData.append('caption', caption);
-
-  await tgApiForm('sendDocument', formData);
-  donProgress(fileId);
-  await pushHistory({ type: 'file', name: file.name, size: file.size, direction: 'sent', timestamp: Date.now() });
-  debugLog('info', `TG file sent: ${file.name} via ${tgGroupId ? 'group relay' : 'personal chat'}`);
 }
 
-async function switchToTgMode() {
-  // Read peer's TG chat ID from input if not yet parsed
-  if (!peerTgChatId) {
-    const inp = document.getElementById('tg-chat-input');
-    if (inp && inp.value.trim()) peerTgChatId = parseInt(inp.value.trim()) || null;
-  }
-  // Read relay group ID from input if not yet parsed
-  if (!tgGroupId) {
-    const grpInp = document.getElementById('tg-group-input');
-    if (grpInp && grpInp.value.trim()) {
-      tgGroupId = parseInt(grpInp.value.trim()) || null;
-      if (tgGroupId) await saveTgGroupId(tgGroupId);
-    }
-  }
+async function switchToRelayMode() {
+  const url = relayUrl || (document.getElementById('relay-url-input') || {}).value || '';
+  if (!url) { showToast('Configure a URL do relay WebSocket antes.'); return; }
 
-  const pid = lastPeerId || connectTarget || (conn && conn.peer) || document.getElementById('peer-input').value.trim();
-  if (!pid)                    { showToast('Informe o ID do peer antes de usar o relay Telegram.'); return; }
-  if (!tgToken || !myTgChatId) { showToast('Configure o Telegram antes de ativar o relay.'); return; }
-  if (!tgGroupId && !peerTgChatId) { showToast('Informe o ID do grupo relay ou o chat ID do peer.'); return; }
-  if (!tgGroupId) {
-    showToast('Sem grupo relay: arquivos não serão baixados automaticamente. Configure um grupo para relay completo.');
-  }
+  const pid = lastPeerId || connectTarget || (conn && conn.peer)
+    || document.getElementById('peer-input').value.trim();
+  if (!pid) { showToast('Informe o ID do peer antes de usar o relay.'); return; }
 
-  debugLog('info', `switching to TG relay · peer=${pid}`);
+  debugLog('info', `switching to WS relay · peer=${pid}`);
 
-  // Stop P2P gracefully without triggering auto-reconnect
   stopHeartbeat();
   if (conn) { const c = conn; conn = null; c.close(); }
   connectTarget  = null;
   connectRetries = 0;
 
-  // Derive channel key from both peer IDs (same formula as P2P)
   if (!channelKey) {
     channelKey = await deriveKey([myId, pid].sort().join(':'), SALT_CHANNEL);
-    debugLog('info', 'TG channel key derived');
+    debugLog('info', 'channel key derived for relay');
+  }
+
+  try {
+    setStatus('connecting', 'relay ws…');
+    await connectRelay(url, pid);
+  } catch (e) {
+    debugLog('error', `relay connect failed: ${e.message}`);
+    showToast('Relay falhou: ' + e.message);
+    setStatus('ready', 'pronto');
+    channelKey = null;
+    return;
   }
 
   lastPeerId = pid;
-  tgMode     = true;
+  relayMode  = true;
+  _relayReconnectAttempts = 0;
   persistLastPeer();
-
-  // Sync offset to avoid replaying old messages
-  try {
-    const latest = await tgApi('getUpdates', { offset: -1, limit: 1 });
-    if (latest.length > 0) tgPollOffset = latest[latest.length - 1].update_id + 1;
-  } catch {}
-
-  startTgPolling();
 
   const short = pid.length > 16 ? pid.slice(0, 14) + '…' : pid;
   document.getElementById('peer-id-badge').textContent = short;
-  document.getElementById('connection-badge').classList.add('visible', 'tg-mode');
+  document.getElementById('connection-badge').classList.add('visible', 'relay-mode');
   document.getElementById('connect-form').style.display = 'none';
   document.getElementById('transfer-section').classList.add('visible');
   document.getElementById('btn-connect').disabled = false;
-  setStatus('connected', 'telegram');
-  updateTgBtnVisibility();
-  showToast('Relay Telegram ativado');
+  setStatus('connected', 'relay ws');
+  updateRelayBtnVisibility();
+  showToast('Relay WebSocket ativado');
 }
 
-function updateTgBtnVisibility() {
-  const chatInp   = document.getElementById('tg-chat-input');
-  const grpInp    = document.getElementById('tg-group-input');
-  const chatReady = peerTgChatId || (chatInp && parseInt(chatInp.value.trim()));
-  const grpReady  = tgGroupId || (grpInp && parseInt(grpInp.value.trim()));
-  const ready     = !!(tgToken && myTgChatId && (chatReady || grpReady) && !tgMode);
-  const btn       = document.getElementById('btn-use-tg');
-  if (btn) btn.style.display = ready ? '' : 'none';
+async function relaySend(data) {
+  if (!relayWs || relayWs.readyState !== 1 || !channelKey) return;
+  const payload = await encryptStr(channelKey, JSON.stringify(data));
+  relayWs.send(JSON.stringify({ type: 'relay', payload }));
+}
+
+async function relaySendFile(file) {
+  if (!relayWs || !channelKey) return;
+  const fileId      = uid();
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE) || 1;
+
+  makeProgressItem(fileId, file.name, file.size);
+  await relaySend({ type: 'file-meta', fileId, name: file.name, size: file.size, totalChunks });
+
+  for (let i = 0; i < totalChunks; i++) {
+    if (!relayWs) break;
+    const start = i * CHUNK_SIZE;
+    const u8    = new Uint8Array(await file.slice(start, start + CHUNK_SIZE).arrayBuffer());
+    const enc   = await encryptBytes(channelKey, u8);
+    await relaySend({ type: 'chunk', fileId, index: i, data: toB64(enc) });
+    setProgress(fileId, (i + 1) / totalChunks);
+    if (i % 8 === 0) await new Promise(r => setTimeout(r, 0));
+  }
+
+  donProgress(fileId);
+  await pushHistory({ type: 'file', name: file.name, size: file.size, direction: 'sent', timestamp: Date.now() });
+  debugLog('info', `relay file sent: ${file.name} (${fmtBytes(file.size)})`);
+}
+
+async function handleRelayMessage(raw) {
+  let msg;
+  try { msg = JSON.parse(raw); } catch { return; }
+
+  if (msg.type === 'ping') {
+    if (relayWs && relayWs.readyState === 1)
+      relayWs.send(JSON.stringify({ type: 'pong' }));
+    return;
+  }
+
+  if (msg.type === 'peer-left') {
+    debugLog('info', 'relay: peer desconectou');
+    showToast('Peer desconectou do relay');
+    onRelayDisconnected(true);
+    return;
+  }
+
+  if (msg.type === 'relay' && channelKey) {
+    try {
+      const plain = await decryptStr(channelKey, msg.payload);
+      const data  = JSON.parse(plain);
+      await handleData(data, true);
+    } catch (e) {
+      debugLog('error', `relay decrypt: ${e.message}`);
+    }
+  }
+}
+
+function onRelayDisconnected(peerLeft = false) {
+  if (!relayMode && !relayWs) return;
+  relayWs   = null;
+  relayMode = false;
+  const target = lastPeerId;
+  onDisconnected();
+  if (target) scheduleRelayReconnect();
+}
+
+function scheduleRelayReconnect() {
+  _relayReconnectAttempts++;
+  const delay = Math.min(30000, _relayReconnectAttempts * 2000);
+  debugLog('info', `relay reconnect in ${delay / 1000}s (tentativa ${_relayReconnectAttempts})`);
+  _relayReconnectTimer = setTimeout(async () => {
+    if (relayMode) return;
+    try { await switchToRelayMode(); }
+    catch {}
+  }, delay);
 }
 
 // ────────────────────────────────────────────────────────────
 // QR code
 // ────────────────────────────────────────────────────────────
 function buildQRUrl() {
-  const base = `${location.origin}${location.pathname}?connect=${encodeURIComponent(myId)}`;
-  let url = myTgChatId ? base + `&tgchat=${myTgChatId}` : base;
-  if (tgGroupId) url += `&tggroup=${tgGroupId}`;
-  return url;
+  return `${location.origin}${location.pathname}?connect=${encodeURIComponent(myId)}`;
 }
 
 function updateQR() {
@@ -895,53 +589,32 @@ async function initPeer() {
     const h = await loadHistory();
     renderHistory(h);
 
-    // Load Telegram config (requires storageKey)
-    const savedToken   = await loadTgToken();
-    const savedChatId  = await loadTgChatId();
-    const savedGroupId = await loadTgGroupId();
-    if (savedToken)  { tgToken    = savedToken; debugLog('info', 'TG token loaded'); }
-    if (savedGroupId){ tgGroupId  = savedGroupId; debugLog('info', `TG group relay id=${tgGroupId}`); }
-    if (savedChatId) {
-      myTgChatId = savedChatId;
-      applyTgConfiguredUI();
+    // Load relay URL
+    const savedRelayUrl = localStorage.getItem(LS_RELAY_URL);
+    if (savedRelayUrl) {
+      relayUrl = savedRelayUrl;
+      const urlInp = document.getElementById('relay-url-input');
+      if (urlInp) urlInp.value = savedRelayUrl;
+      const resetBtn = document.getElementById('btn-relay-reset');
+      if (resetBtn) resetBtn.style.display = '';
+      updateRelayBtnVisibility();
+      debugLog('info', `relay URL loaded: ${savedRelayUrl}`);
     }
 
     updateQR();
     setStatus('ready', 'pronto');
 
     // Parse URL params
-    const p       = new URLSearchParams(location.search);
-    const cid     = p.get('connect');
-    const tgchat  = p.get('tgchat');
-    const tggroup = p.get('tggroup');
-    if (tgchat) {
-      peerTgChatId = parseInt(tgchat);
-      const inp = document.getElementById('tg-chat-input');
-      if (inp) inp.value = tgchat;
-    }
-    if (tggroup) {
-      tgGroupId = parseInt(tggroup);
-      const grpInp = document.getElementById('tg-group-input');
-      if (grpInp) grpInp.value = tggroup;
-      await saveTgGroupId(tgGroupId);
-      debugLog('info', `TG group relay from URL: ${tgGroupId}`);
-    }
-    if (tgchat || tggroup) updateTgBtnVisibility();
+    const p   = new URLSearchParams(location.search);
+    const cid = p.get('connect');
     if (cid && cid !== id) {
       document.getElementById('peer-input').value = cid;
       connectToPeer();
     } else if (!cid) {
       // Restore last peer (persists across page reloads, cleared on manual disconnect)
-      const savedPeer   = localStorage.getItem(LS_LAST_PEER);
-      const savedPeerTg = localStorage.getItem(LS_PEER_TG_CHAT);
+      const savedPeer = localStorage.getItem(LS_LAST_PEER);
       if (savedPeer && savedPeer !== id) {
         document.getElementById('peer-input').value = savedPeer;
-        if (savedPeerTg && !peerTgChatId) {
-          peerTgChatId = parseInt(savedPeerTg);
-          const inp = document.getElementById('tg-chat-input');
-          if (inp) inp.value = savedPeerTg;
-          updateTgBtnVisibility();
-        }
         debugLog('info', `restoring last peer: ${savedPeer}`);
         connectToPeer();
       }
@@ -1018,13 +691,6 @@ function connectToPeer() {
   if (!tid || !peer || !myId) return;
   if (tid === myId) { showToast('Esse é o seu próprio ID.'); return; }
 
-  // Read peer's TG chat ID if provided
-  const tgInp = document.getElementById('tg-chat-input');
-  if (tgInp && tgInp.value.trim()) {
-    peerTgChatId = parseInt(tgInp.value.trim()) || null;
-    updateTgBtnVisibility();
-  }
-
   if (conn && conn.open && conn.peer === tid) {
     debugLog('info', `already connected to ${tid}`);
     return;
@@ -1064,9 +730,9 @@ function hookICE(c) {
       if (pc.iceConnectionState === 'failed') {
         debugLog('error', 'ICE failed — NAT traversal blocked; TURN server needed');
         showToast('Falha ICE: sem rota direta entre os dispositivos');
-        if (tgToken && myTgChatId && (peerTgChatId || tgGroupId) && !tgMode) {
+        if (relayUrl && !relayMode) {
           if (!lastPeerId && conn && conn.peer) lastPeerId = conn.peer;
-          setTimeout(switchToTgMode, 1000);
+          setTimeout(switchToRelayMode, 1000);
         }
       }
     });
@@ -1085,9 +751,9 @@ function setupConn() {
   const _connTimeout = setTimeout(() => {
     debugLog('error', 'connection timeout (20s) — ICE negotiation stalled');
     showToast('Tempo esgotado: verifique a rede ou bloqueio de firewall');
-    if (tgToken && myTgChatId && (peerTgChatId || tgGroupId) && !tgMode) {
+    if (relayUrl && !relayMode) {
       if (!lastPeerId && conn && conn.peer) lastPeerId = conn.peer;
-      setTimeout(switchToTgMode, 500);
+      setTimeout(switchToRelayMode, 500);
     }
   }, 20000);
 
@@ -1110,7 +776,7 @@ function setupConn() {
     document.getElementById('connect-form').style.display = 'none';
     document.getElementById('transfer-section').classList.add('visible');
     document.getElementById('btn-connect').disabled = false;
-    updateTgBtnVisibility();
+    updateRelayBtnVisibility();
   });
 
   conn.on('data', data => handleData(data, false));
@@ -1137,17 +803,11 @@ function setupConn() {
 function onDisconnected() {
   debugLog('info', 'state reset · waiting for connection');
   stopHeartbeat();
-  // Keep background group polling alive if a relay group is configured
-  if (tgGroupId) {
-    if (!tgAbortCtrl) startTgPolling();  // restart watcher if it stopped
-  } else {
-    stopTgPolling();
-  }
   connectTarget  = null;
   connectRetries = 0;
-  tgMode         = false;
+  relayMode      = false;
   setStatus('ready', 'pronto');
-  document.getElementById('connection-badge').classList.remove('visible', 'tg-mode');
+  document.getElementById('connection-badge').classList.remove('visible', 'relay-mode');
   document.getElementById('connect-form').style.display = '';
   document.getElementById('transfer-section').classList.remove('visible');
   document.getElementById('transfers-list').innerHTML = '';
@@ -1156,15 +816,15 @@ function onDisconnected() {
   incoming   = {};
   sendQueue  = [];
   isSending  = false;
-  updateTgBtnVisibility();
+  updateRelayBtnVisibility();
 }
 
 function disconnect() {
   lastPeerId = null; // manual disconnect — don't auto-reconnect
   clearLastPeer();
   stopHeartbeat();
-  stopTgPolling();
-  tgMode = false;
+  disconnectRelay();
+  relayMode = false;
   if (conn) { conn.close(); }
   onDisconnected();
 }
@@ -1172,10 +832,10 @@ function disconnect() {
 // ────────────────────────────────────────────────────────────
 // Incoming data
 // ────────────────────────────────────────────────────────────
-async function handleData(data, fromTg = false) {
+async function handleData(data, fromRelay = false) {
   try {
     if (data.type === 'ping') {
-      if (!tgMode) conn.send({ type: 'pong', ts: data.ts });
+      if (!relayMode) conn.send({ type: 'pong', ts: data.ts });
       return;
     }
 
@@ -1200,7 +860,11 @@ async function handleData(data, fromTg = false) {
     if (data.type === 'chunk') {
       const f = incoming[data.fileId];
       if (!f) return;
-      f.chunks[data.index] = fromB64(data.data);
+      let bytes = fromB64(data.data);
+      if (fromRelay && channelKey) {
+        try { bytes = await decryptBytes(channelKey, bytes); } catch {}
+      }
+      f.chunks[data.index] = bytes;
       f.received++;
       setProgress(data.fileId, f.received / f.meta.totalChunks);
       if (f.received === f.meta.totalChunks) assembleAndDownload(data.fileId);
@@ -1209,8 +873,8 @@ async function handleData(data, fromTg = false) {
 
     if (data.type === 'message') {
       let text = data.text;
-      // TG payloads are already decrypted; P2P payloads need decryption
-      if (!fromTg && channelKey) {
+      // relay payloads are already decrypted; P2P payloads need decryption
+      if (!fromRelay && channelKey) {
         try { text = await decryptStr(channelKey, data.text); } catch {}
       }
       await pushHistory({ type: 'message', text, direction: 'received', timestamp: data.ts || Date.now() });
@@ -1247,7 +911,7 @@ function assembleAndDownload(fileId) {
 // Sending
 // ────────────────────────────────────────────────────────────
 async function handleFileSelect(files) {
-  if ((!conn && !tgMode) || !files.length) return;
+  if ((!conn && !relayMode) || !files.length) return;
   const arr     = Array.from(files);
   const zipMode = document.getElementById('zip-mode').checked && arr.length > 1;
 
@@ -1280,10 +944,10 @@ async function handleFileSelect(files) {
 async function processSendQueue() {
   if (isSending) return;
   isSending = true;
-  while (sendQueue.length && (conn || tgMode)) {
+  while (sendQueue.length && (conn || relayMode)) {
     const file = sendQueue.shift();
-    if (tgMode) {
-      await tgSendFile(file);
+    if (relayMode) {
+      await relaySendFile(file);
     } else {
       await sendFile(file);
     }
@@ -1315,10 +979,10 @@ async function sendFile(file) {
 async function sendMessage() {
   const input = document.getElementById('msg-input');
   const text  = input.value.trim();
-  if (!text || (!conn && !tgMode)) return;
+  if (!text || (!conn && !relayMode)) return;
 
-  if (tgMode) {
-    await tgSend({ type: 'message', text, ts: Date.now() });
+  if (relayMode) {
+    await relaySend({ type: 'message', text, ts: Date.now() });
     input.value = '';
     await pushHistory({ type: 'message', text, direction: 'sent', timestamp: Date.now() });
     return;
