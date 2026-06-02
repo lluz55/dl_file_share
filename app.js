@@ -49,6 +49,7 @@ const PONG_TIMEOUT    = 8000;
 let relayWs                 = null;
 let relayMode               = false;
 let relayUrl                = null;
+let _relayConnecting        = false; // true while connectRelay is pending
 let _relayReconnectTimer    = null;
 let _relayReconnectAttempts = 0;
 
@@ -413,12 +414,19 @@ function disconnectRelay() {
 }
 
 async function switchToRelayMode() {
+  // Prevent concurrent calls: relayMode is false while connecting (relayWs not set yet)
+  if (_relayConnecting || relayMode) return;
+  _relayConnecting = true;
+
+  // Close any dangling socket from a previous attempt
+  disconnectRelay();
+
   const url = relayUrl || (document.getElementById('relay-url-input') || {}).value || '';
-  if (!url) { showToast('Configure a URL do relay WebSocket antes.'); return; }
+  if (!url) { _relayConnecting = false; showToast('Configure a URL do relay WebSocket antes.'); return; }
 
   const pid = lastPeerId || connectTarget || (conn && conn.peer)
     || document.getElementById('peer-input').value.trim();
-  if (!pid) { showToast('Informe o ID do peer antes de usar o relay.'); return; }
+  if (!pid) { _relayConnecting = false; showToast('Informe o ID do peer antes de usar o relay.'); return; }
 
   debugLog('info', `switching to WS relay · peer=${pid}`);
 
@@ -436,6 +444,7 @@ async function switchToRelayMode() {
     setStatus('connecting', 'relay ws…');
     await connectRelay(url, pid);
   } catch (e) {
+    _relayConnecting = false;
     debugLog('error', `relay connect failed: ${e.message}`);
     showToast('Relay falhou: ' + e.message);
     setStatus('ready', 'pronto');
@@ -443,6 +452,7 @@ async function switchToRelayMode() {
     return;
   }
 
+  _relayConnecting = false;
   lastPeerId = pid;
   relayMode  = true;
   _relayReconnectAttempts = 0;
@@ -517,9 +527,16 @@ async function handleRelayMessage(raw) {
 }
 
 function onRelayDisconnected(peerLeft = false) {
-  if (!relayMode && !relayWs) return;
-  relayWs   = null;
-  relayMode = false;
+  if (!relayMode && !relayWs && !_relayConnecting) return;
+  // Close the socket before nulling — prevents dangling connections on the server
+  if (relayWs) {
+    relayWs.onclose = null;
+    relayWs.onerror = null;
+    relayWs.close();
+    relayWs = null;
+  }
+  _relayConnecting = false;
+  relayMode        = false;
   const target = lastPeerId;
   onDisconnected();
   if (target) scheduleRelayReconnect();

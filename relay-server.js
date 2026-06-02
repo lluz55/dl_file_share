@@ -77,6 +77,12 @@ function handleJoin(ws, msg) {
       ws.close();
       return;
     }
+    // Reject self-pairing: same peer joining both slots
+    if (room.aPeerId === peerId) {
+      send(ws, { type: 'error', code: 'self-join' });
+      ws.close();
+      return;
+    }
     room.b       = ws;
     room.bPeerId = peerId;
     ws._roomId   = roomId;
