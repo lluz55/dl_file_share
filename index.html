@@ -4,6 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Relay</title>
+  
+  <!-- PWA Manifest & Colors -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0c0c0e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="icon.svg">
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -12,14 +20,19 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="version.js"></script>
+  <script src="cloudflare-words.js"></script>
 </head>
 <body>
+  <!-- Floating Loading Bar -->
+  <div id="floating-loading-bar" class="floating-loading-bar" style="width: 0%; opacity: 0;"></div>
+
   <div class="container">
 
     <!-- Header -->
     <header>
       <div class="wordmark">relay<span>.</span><span class="commit-hash" id="commit-hash"></span></div>
       <div class="header-controls">
+        <button class="btn-icon" id="btn-install" style="display:none" onclick="installPWA()" title="Instalar WebApp">⤓</button>
         <button class="btn-icon" id="btn-debug" onclick="toggleDebug()" title="Debug">⌬</button>
         <button class="btn-icon" id="btn-theme" onclick="toggleTheme()" title="Alternar tema">◐</button>
         <div class="status">
@@ -62,10 +75,13 @@
       <div class="label">servidor TURN (fallback)</div>
       <p class="relay-hint">Canal de fallback quando o P2P falhar. Inicie <code>relay-server.js</code> localmente e exponha via Cloudflare Tunnel.</p>
       <div class="connect-row" style="margin-top:12px">
-        <input class="input" id="relay-url-input" type="text"
-               placeholder="ws://localhost:8765  ou  wss://xxx.trycloudflare.com"
-               autocomplete="off" spellcheck="false"
-               onkeydown="if(event.key==='Enter') testRelayConnection()">
+        <div class="relay-input-wrapper">
+          <input class="input" id="relay-url-input" type="text"
+                 placeholder="ws://localhost:8765  ou  wss://xxx.trycloudflare.com"
+                 autocomplete="off" spellcheck="false"
+                 onkeydown="if(event.key==='Enter') testRelayConnection()">
+          <div class="autocomplete-suggestions" id="relay-autocomplete-list" style="display:none"></div>
+        </div>
         <button class="btn-ghost" onclick="testRelayConnection()">testar</button>
       </div>
       <div class="tg-status-msg" id="relay-status-msg" style="display:none"></div>

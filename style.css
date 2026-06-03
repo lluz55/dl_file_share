@@ -695,3 +695,74 @@ header {
   padding: 20px 0;
   font-size: 11.5px;
 }
+
+/* ── Floating Loading Bar ────────────────────────── */
+.floating-loading-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #00f2fe, #4facfe, #bf55ec, #00f2fe);
+  background-size: 200% auto;
+  box-shadow: 0 0 8px rgba(0, 242, 254, 0.5);
+  z-index: 9999;
+  transition: width 0.25s ease-out, opacity 0.25s ease-in-out;
+  animation: shimmer 2s linear infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+/* ── Autocomplete Suggestions ───────────────────── */
+.relay-input-wrapper {
+  flex: 1;
+  position: relative;
+  display: flex;
+}
+.relay-input-wrapper .input {
+  width: 100%;
+}
+
+.autocomplete-suggestions {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+  max-height: 180px;
+  overflow-y: auto;
+  z-index: 100;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.autocomplete-suggestions::-webkit-scrollbar {
+  width: 4px;
+}
+.autocomplete-suggestions::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.suggestion-item {
+  padding: 8px 12px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.1s, color 0.1s;
+}
+
+.suggestion-item:hover,
+.suggestion-item.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: #00f2fe;
+}

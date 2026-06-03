@@ -353,6 +353,7 @@ async function testRelayConnection() {
   if (msgEl) { msgEl.textContent = 'testando conexão…'; msgEl.style.display = ''; msgEl.className = 'tg-status-msg'; }
 
   debugLog('info', `relay test: conectando a ${url}`);
+  showLoadingBar(30);
   try {
     await new Promise((resolve, reject) => {
       const ws = new WebSocket(url);
@@ -367,9 +368,11 @@ async function testRelayConnection() {
     updateRelayBtnVisibility();
     startPresence(); // begin listening now that a relay URL is configured
     debugLog('info', `relay test: sucesso · URL salva: ${url}`);
+    hideLoadingBar();
   } catch (e) {
     if (msgEl) { msgEl.textContent = 'Erro: ' + e.message; msgEl.className = 'tg-status-msg error'; }
     debugLog('error', `relay test: falhou · ${e.message}`);
+    hideLoadingBar();
   }
 }
 
@@ -1129,6 +1132,7 @@ async function handleFileSelect(files) {
   const zipMode = document.getElementById('zip-mode').checked && arr.length > 1;
 
   if (zipMode) {
+    showLoadingBar(10);
     const zip     = new JSZip();
     const ts      = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
     const zipName = `relay-${ts}.zip`;
@@ -1137,14 +1141,21 @@ async function handleFileSelect(files) {
     makeProgressItem(packId, `compactando ${arr.length} arquivos…`, 0);
     for (let i = 0; i < arr.length; i++) {
       zip.file(arr[i].name, arr[i]);
-      setProgress(packId, (i + 1) / arr.length * 0.3);
+      const p = (i + 1) / arr.length * 0.3;
+      setProgress(packId, p);
+      updateLoadingBar(10 + p * 30);
     }
 
     const blob = await zip.generateAsync(
       { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
-      meta => setProgress(packId, 0.3 + meta.percent / 100 * 0.7)
+      meta => {
+        const p = 0.3 + meta.percent / 100 * 0.7;
+        setProgress(packId, p);
+        updateLoadingBar(40 + p * 60);
+      }
     );
     donProgress(packId);
+    hideLoadingBar();
 
     sendQueue.push(new File([blob], zipName, { type: 'application/zip' }));
   } else {
@@ -1275,6 +1286,275 @@ dropZone.addEventListener('drop', e => {
 });
 
 // ────────────────────────────────────────────────────────────
+// Floating Loading Bar Controller
+// ────────────────────────────────────────────────────────────
+let loadingBarTimeout = null;
+function showLoadingBar(progress = 30) {
+  const bar = document.getElementById('floating-loading-bar');
+  if (!bar) return;
+  clearTimeout(loadingBarTimeout);
+  bar.style.opacity = '1';
+  bar.style.width = progress + '%';
+}
+function updateLoadingBar(progress) {
+  const bar = document.getElementById('floating-loading-bar');
+  if (bar) bar.style.width = progress + '%';
+}
+function hideLoadingBar() {
+  const bar = document.getElementById('floating-loading-bar');
+  if (!bar) return;
+  bar.style.width = '100%';
+  loadingBarTimeout = setTimeout(() => {
+    bar.style.opacity = '0';
+    setTimeout(() => {
+      bar.style.width = '0%';
+    }, 250);
+  }, 500);
+}
+
+// ────────────────────────────────────────────────────────────
+// PWA (Progressive Web App) Install Logic
+// ────────────────────────────────────────────────────────────
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  const installBtn = document.getElementById('btn-install');
+  if (installBtn) installBtn.style.display = '';
+});
+
+async function installPWA() {
+  if (!deferredPrompt) return;
+  deferredPrompt.prompt();
+  const { outcome } = await deferredPrompt.userChoice;
+  debugLog('info', `PWA install outcome: ${outcome}`);
+  deferredPrompt = null;
+  const installBtn = document.getElementById('btn-install');
+  if (installBtn) installBtn.style.display = 'none';
+}
+
+window.addEventListener('appinstalled', () => {
+  debugLog('info', 'PWA instalado com sucesso!');
+  const installBtn = document.getElementById('btn-install');
+  if (installBtn) installBtn.style.display = 'none';
+});
+
+// Register Service Worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js')
+      .then((reg) => debugLog('info', `ServiceWorker registrado no escopo: ${reg.scope}`))
+      .catch((err) => debugLog('error', `Falha no ServiceWorker: ${err.message}`));
+  });
+}
+
+// ────────────────────────────────────────────────────────────
+// Trie (Prefix Tree) for Autocomplete
+// ────────────────────────────────────────────────────────────
+class TrieNode {
+  constructor() {
+    this.children = {};
+    this.isEndOfWord = false;
+  }
+}
+
+class Trie {
+  constructor() {
+    this.root = new TrieNode();
+  }
+  insert(word) {
+    let node = this.root;
+    for (let char of word) {
+      if (!node.children[char]) {
+        node.children[char] = new TrieNode();
+      }
+      node = node.children[char];
+    }
+    node.isEndOfWord = true;
+  }
+  searchPrefix(prefix, maxResults = 6) {
+    let node = this.root;
+    for (let char of prefix) {
+      if (!node.children[char]) return [];
+      node = node.children[char];
+    }
+    const results = [];
+    this._collect(node, prefix, results, maxResults);
+    return results;
+  }
+  _collect(node, prefix, results, maxResults) {
+    if (results.length >= maxResults) return;
+    if (node.isEndOfWord) {
+      results.push(prefix);
+    }
+    const sortedKeys = Object.keys(node.children).sort();
+    for (let char of sortedKeys) {
+      this._collect(node.children[char], prefix + char, results, maxResults);
+    }
+  }
+}
+
+// Initialize and populate the Trie
+const autocompleteTrie = new Trie();
+if (window.CLOUDFLARE_WORDS) {
+  window.CLOUDFLARE_WORDS.forEach(word => autocompleteTrie.insert(word));
+}
+
+// ────────────────────────────────────────────────────────────
+// Autocomplete Event Listeners & Logic
+// ────────────────────────────────────────────────────────────
+let autocompleteContext = null;
+let activeSuggestionIndex = -1;
+
+function getAutocompleteContext(value, caretPos) {
+  const text = value.substring(0, caretPos);
+  const match = text.match(/^(wss?:\/\/)?([a-zA-Z0-9-]*)$/i);
+  if (!match) return null;
+
+  const urlPrefix = match[1] || '';
+  const wordsStr = match[2] || '';
+  const parts = wordsStr.split('-');
+  const currentWord = parts[parts.length - 1];
+
+  if (!/^[a-zA-Z]+$/.test(currentWord)) {
+    return null;
+  }
+
+  return {
+    urlPrefix,
+    wordsBefore: parts.slice(0, -1),
+    currentWord,
+    caretPos
+  };
+}
+
+function showAutocompleteSuggestions(suggestions) {
+  const listEl = document.getElementById('relay-autocomplete-list');
+  if (!listEl) return;
+
+  listEl.innerHTML = '';
+  if (suggestions.length === 0) {
+    listEl.style.display = 'none';
+    activeSuggestionIndex = -1;
+    return;
+  }
+
+  suggestions.forEach((suggestion, idx) => {
+    const item = document.createElement('div');
+    item.className = 'suggestion-item';
+    item.textContent = suggestion;
+    item.onclick = (e) => {
+      e.preventDefault();
+      applyAutocompleteSuggestion(suggestion);
+    };
+    listEl.appendChild(item);
+  });
+
+  listEl.style.display = 'block';
+  activeSuggestionIndex = -1;
+}
+
+function applyAutocompleteSuggestion(suggestion) {
+  const urlInp = document.getElementById('relay-url-input');
+  if (!urlInp || !autocompleteContext) return;
+
+  const { urlPrefix, wordsBefore } = autocompleteContext;
+  const newWords = [...wordsBefore, suggestion];
+  
+  let newVal = (urlPrefix || 'wss://') + newWords.join('-');
+  
+  if (newWords.length < 4) {
+    newVal += '-';
+  } else {
+    newVal += '.trycloudflare.com';
+  }
+
+  urlInp.value = newVal;
+  closeAutocomplete();
+  urlInp.focus();
+}
+
+function closeAutocomplete() {
+  const listEl = document.getElementById('relay-autocomplete-list');
+  if (listEl) {
+    listEl.style.display = 'none';
+    listEl.innerHTML = '';
+  }
+  autocompleteContext = null;
+  activeSuggestionIndex = -1;
+}
+
+function initAutocomplete() {
+  const urlInp = document.getElementById('relay-url-input');
+  const listEl = document.getElementById('relay-autocomplete-list');
+  if (!urlInp || !listEl) return;
+
+  let searchTimeout = null;
+
+  urlInp.addEventListener('input', (e) => {
+    clearTimeout(searchTimeout);
+    
+    searchTimeout = setTimeout(() => {
+      const val = urlInp.value;
+      const caret = urlInp.selectionStart;
+      
+      autocompleteContext = getAutocompleteContext(val, caret);
+      if (!autocompleteContext) {
+        closeAutocomplete();
+        return;
+      }
+
+      const query = autocompleteContext.currentWord.toLowerCase();
+      const matches = autocompleteTrie.searchPrefix(query, 6);
+      showAutocompleteSuggestions(matches);
+    }, 100);
+  });
+
+  urlInp.addEventListener('keydown', (e) => {
+    const items = listEl.querySelectorAll('.suggestion-item');
+    if (listEl.style.display === 'block' && items.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        activeSuggestionIndex = (activeSuggestionIndex + 1) % items.length;
+        updateActiveSuggestion(items);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        activeSuggestionIndex = (activeSuggestionIndex - 1 + items.length) % items.length;
+        updateActiveSuggestion(items);
+      } else if (e.key === 'Enter' || e.key === 'Tab') {
+        if (activeSuggestionIndex >= 0 && activeSuggestionIndex < items.length) {
+          e.preventDefault();
+          applyAutocompleteSuggestion(items[activeSuggestionIndex].textContent);
+        } else if (items.length > 0) {
+          e.preventDefault();
+          applyAutocompleteSuggestion(items[0].textContent);
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeAutocomplete();
+      }
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!urlInp.contains(e.target) && !listEl.contains(e.target)) {
+      closeAutocomplete();
+    }
+  });
+}
+
+function updateActiveSuggestion(items) {
+  items.forEach((item, idx) => {
+    if (idx === activeSuggestionIndex) {
+      item.classList.add('active');
+      item.scrollIntoView({ block: 'nearest' });
+    } else {
+      item.classList.remove('active');
+    }
+  });
+}
+
+// ────────────────────────────────────────────────────────────
 // Boot
 // ────────────────────────────────────────────────────────────
 applyTheme(localStorage.getItem(LS_THEME) || 'dark');
@@ -1283,6 +1563,7 @@ if (typeof RELAY_COMMIT !== 'undefined') {
   if (el) el.textContent = RELAY_COMMIT;
 }
 debugLog('info', 'relay starting…');
+initAutocomplete();
 
 if (typeof Peer === 'undefined') {
   debugLog('error', 'PeerJS library not loaded — check network/CSP');
