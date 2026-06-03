@@ -687,6 +687,14 @@ async function initPeer() {
       return;
     }
 
+    if (err.type === 'negotiation-failed') {
+      const target = connectTarget || (conn && conn.peer);
+      connectTarget  = null;
+      connectRetries = 0;
+      tryRelayFallback(target);
+      return;
+    }
+
     const serverErrors = ['network', 'server-error', 'socket-error', 'socket-closed'];
     if (serverErrors.includes(err.type)) {
       const detail = err.message ? err.message.split('\n')[0].slice(0, 50) : err.type;
@@ -775,7 +783,22 @@ function doConnect(disableBtn = true) {
   setupConn();
 }
 
-function hookICE(c) {
+function tryRelayFallback(connPeer) {
+  const target    = lastPeerId || connPeer;
+  const effectiveRelayUrl = relayUrl || localStorage.getItem(LS_RELAY_URL);
+  debugLog('info', `tryRelayFallback · target=${target} relayUrl=${!!effectiveRelayUrl} relayMode=${relayMode}`);
+  if (effectiveRelayUrl && !relayMode && target) {
+    if (!relayUrl) relayUrl = effectiveRelayUrl;
+    lastPeerId = target;
+    onDisconnected();
+    debugLog('info', `relay fallback ativado para ${target}`);
+    setTimeout(switchToRelayMode, 500);
+    return true;
+  }
+  return false;
+}
+
+function hookICE(c, connPeer) {
   let attempts = 0;
   (function tryHook() {
     const pc = c.peerConnection;
@@ -790,10 +813,7 @@ function hookICE(c) {
       if (pc.iceConnectionState === 'failed') {
         debugLog('error', 'ICE failed — NAT traversal blocked; TURN server needed');
         showToast('Falha ICE: sem rota direta entre os dispositivos');
-        if (relayUrl && !relayMode) {
-          if (!lastPeerId && conn && conn.peer) lastPeerId = conn.peer;
-          setTimeout(switchToRelayMode, 1000);
-        }
+        tryRelayFallback(connPeer);
       }
     });
     pc.addEventListener('icegatheringstatechange', () => {
@@ -801,27 +821,30 @@ function hookICE(c) {
     });
     pc.addEventListener('connectionstatechange', () => {
       debugLog('conn', `RTC → ${pc.connectionState}`);
+      if (pc.connectionState === 'failed') {
+        debugLog('error', 'RTC connection failed — NAT traversal blocked');
+        showToast('Falha de conexão: sem rota direta entre os dispositivos');
+        tryRelayFallback(connPeer);
+      }
     });
   })();
 }
 
 function setupConn() {
-  hookICE(conn);
+  const _connPeer = conn.peer; // capture before any async reassignment
+  hookICE(conn, _connPeer);
 
   const _connTimeout = setTimeout(() => {
     debugLog('error', 'connection timeout (20s) — ICE negotiation stalled');
     showToast('Tempo esgotado: verifique a rede ou bloqueio de firewall');
-    if (relayUrl && !relayMode) {
-      if (!lastPeerId && conn && conn.peer) lastPeerId = conn.peer;
-      setTimeout(switchToRelayMode, 500);
-    }
+    tryRelayFallback(_connPeer);
   }, 20000);
 
   conn.on('open', async () => {
     clearTimeout(_connTimeout);
     connectTarget  = null;
     connectRetries = 0;
-    const pid  = conn.peer;
+    const pid  = _connPeer;
     lastPeerId = pid;
     persistLastPeer();
     debugLog('conn', `open · peer=${pid}`);
@@ -845,28 +868,20 @@ function setupConn() {
     clearTimeout(_connTimeout);
     stopHeartbeat();
     debugLog('conn', 'closed');
-    const target = lastPeerId || (conn && conn.peer);
-    if (relayUrl && !relayMode && target && !lastPeerId) {
-      lastPeerId = target;
-      onDisconnected();
-      setTimeout(switchToRelayMode, 500);
-    } else {
-      onDisconnected();
-      if (target) scheduleReconnect(target);
-    }
+    const wasConnected = !!lastPeerId;
+    const target = lastPeerId || _connPeer;
+    // only try relay if connection never opened (pre-handshake failure)
+    if (!wasConnected && tryRelayFallback(_connPeer)) return;
+    onDisconnected();
+    if (target) scheduleReconnect(target);
   });
 
   conn.on('error', e => {
     clearTimeout(_connTimeout);
     stopHeartbeat();
     debugLog('error', `conn · ${e.message || e.type || String(e)}`);
-    const target = lastPeerId || (conn && conn.peer);
-    if (relayUrl && !relayMode && target) {
-      lastPeerId = target;
-      onDisconnected();
-      debugLog('info', `conn error — fallback relay para ${target}`);
-      setTimeout(switchToRelayMode, 500);
-    } else {
+    if (!tryRelayFallback(_connPeer)) {
+      const target = lastPeerId || _connPeer;
       onDisconnected();
       if (target) scheduleReconnect(target);
     }
