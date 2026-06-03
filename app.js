@@ -1396,9 +1396,20 @@ class Trie {
 
 // Initialize and populate the Trie
 const autocompleteTrie = new Trie();
-if (window.CLOUDFLARE_WORDS) {
-  window.CLOUDFLARE_WORDS.forEach(word => autocompleteTrie.insert(word));
-}
+let wordsLoadedCount = 0;
+const defaultAutocompleteFallback = [
+  "wise", "juvenile", "pink", "recovered", "weak", "atm", "ways", "provides", "usually", "poor",
+  "about", "above", "across", "active", "actor", "alert", "alike", "alive", "amazing", "ancient",
+  "angry", "animal", "annual", "another", "answer", "apple", "apply", "arctic", "area", "army",
+  "around", "arrive", "artist", "aspect", "atomic", "attach", "attack", "attempt", "attend", "audio",
+  "autumn", "average", "avoid", "award", "aware", "away", "awful", "baby", "back", "backup",
+  "badge", "balance", "balloon", "banana", "basic", "battle", "beach", "beacon", "beauty", "become",
+  "behind", "belief", "belong", "below", "benefit", "berry", "better", "between", "beyond", "bicycle"
+];
+
+const wordsToInsert = window.CLOUDFLARE_WORDS || defaultAutocompleteFallback;
+wordsToInsert.forEach(word => autocompleteTrie.insert(word));
+wordsLoadedCount = wordsToInsert.length;
 
 // ────────────────────────────────────────────────────────────
 // Autocomplete Event Listeners & Logic
@@ -1487,6 +1498,9 @@ function closeAutocomplete() {
 function initAutocomplete() {
   const urlInp = document.getElementById('relay-url-input');
   const listEl = document.getElementById('relay-autocomplete-list');
+  
+  debugLog('info', `initAutocomplete: urlInp=${!!urlInp}, listEl=${!!listEl}, words=${wordsLoadedCount}`);
+  
   if (!urlInp || !listEl) return;
 
   let searchTimeout = null;
@@ -1499,6 +1513,8 @@ function initAutocomplete() {
       const caret = urlInp.selectionStart;
       
       autocompleteContext = getAutocompleteContext(val, caret);
+      debugLog('info', `autocomplete input: val="${val}", caret=${caret}, hasContext=${!!autocompleteContext}`);
+      
       if (!autocompleteContext) {
         closeAutocomplete();
         return;
@@ -1506,6 +1522,7 @@ function initAutocomplete() {
 
       const query = autocompleteContext.currentWord.toLowerCase();
       const matches = autocompleteTrie.searchPrefix(query, 6);
+      debugLog('info', `autocomplete match: query="${query}", found=${matches.length}`);
       showAutocompleteSuggestions(matches);
     }, 100);
   });
