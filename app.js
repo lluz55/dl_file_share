@@ -49,7 +49,7 @@ const PONG_TIMEOUT    = 8000;
 // Relay state
 let relayWs                 = null;
 let relayMode               = false;
-let relayUrl                = null;
+let relayUrl                = localStorage.getItem(LS_RELAY_URL) || (location.protocol.startsWith('http') ? ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host) : null);
 let _relayConnecting        = false; // true while connectRelay is pending
 let _relayReconnectTimer    = null;
 let _relayReconnectAttempts = 0;
@@ -755,14 +755,16 @@ async function initPeer() {
 
     // Load relay URL
     const savedRelayUrl = localStorage.getItem(LS_RELAY_URL);
-    if (savedRelayUrl) {
-      relayUrl = savedRelayUrl;
+    const defaultRelayUrl = location.protocol.startsWith('http') ? ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host) : null;
+    const effectiveRelayUrl = savedRelayUrl || defaultRelayUrl;
+    if (effectiveRelayUrl) {
+      relayUrl = effectiveRelayUrl;
       const urlInp = document.getElementById('relay-url-input');
-      if (urlInp) urlInp.value = savedRelayUrl;
+      if (urlInp) urlInp.value = effectiveRelayUrl;
       const resetBtn = document.getElementById('btn-relay-reset');
-      if (resetBtn) resetBtn.style.display = '';
+      if (resetBtn) resetBtn.style.display = savedRelayUrl ? '' : 'none';
       updateRelayBtnVisibility();
-      debugLog('info', `relay URL loaded: ${savedRelayUrl}`);
+      debugLog('info', `relay URL loaded: ${effectiveRelayUrl}`);
       startPresence(); // listen for inbound relay connections from the start
     }
 

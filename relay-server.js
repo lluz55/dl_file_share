@@ -1,12 +1,62 @@
 'use strict';
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 8765;
 
 // rooms: Map<roomId, { a: ws, aPeerId: string, b?: ws, bPeerId?: string }>
 const rooms = new Map();
 
-const wss = new WebSocketServer({ port: PORT });
-console.log(`relay-server listening on ws://localhost:${PORT}`);
+const server = http.createServer((req, res) => {
+  let filePath = req.url === '/' || req.url === '' ? '/index.html' : req.url;
+  filePath = filePath.split('?')[0].split('#')[0];
+  
+  const absolutePath = path.join(__dirname, filePath);
+  
+  if (!absolutePath.startsWith(__dirname)) {
+    res.statusCode = 403;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end('Forbidden');
+    return;
+  }
+  
+  fs.stat(absolutePath, (err, stats) => {
+    if (err || !stats.isFile()) {
+      res.statusCode = 404;
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.end('Not Found');
+      return;
+    }
+    
+    let contentType = 'application/octet-stream';
+    const ext = path.extname(absolutePath).toLowerCase();
+    if (ext === '.html') contentType = 'text/html; charset=utf-8';
+    else if (ext === '.js') contentType = 'application/javascript; charset=utf-8';
+    else if (ext === '.css') contentType = 'text/css; charset=utf-8';
+    else if (ext === '.json') contentType = 'application/json; charset=utf-8';
+    else if (ext === '.svg') contentType = 'image/svg+xml; charset=utf-8';
+    else if (ext === '.png') contentType = 'image/png';
+    else if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
+    
+    res.setHeader('Content-Type', contentType);
+    
+    const stream = fs.createReadStream(absolutePath);
+    stream.on('error', () => {
+      if (!res.headersSent) {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.end('Internal Server Error');
+      }
+    });
+    stream.pipe(res);
+  });
+});
+
+const wss = new WebSocketServer({ server });
+server.listen(PORT, () => {
+  console.log(`relay-server (HTTP + WebSockets) listening on port ${PORT}`);
+});
 
 wss.on('connection', ws => {
   ws._roomId  = null;
