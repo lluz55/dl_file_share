@@ -72,6 +72,21 @@
       <button class="btn-ghost relay-reset-btn" id="btn-relay-reset" onclick="resetRelay()" style="display:none">remover configuração</button>
     </div>
 
+    <!-- TURN Server -->
+    <div class="card">
+      <div class="label">servidor TURN (WebRTC)</div>
+      <p class="relay-hint">Canal alternativo nativo para contornar NATs simétricos e firewalls corporativos restritivos.</p>
+      <div class="connect-row" style="margin-top:12px">
+        <input class="input" id="turn-config-input" type="text"
+               placeholder="turn:usuario:senha@domain:port"
+               autocomplete="off" spellcheck="false"
+               onkeydown="if(event.key==='Enter') saveTurnConfig()">
+        <button class="btn-ghost" onclick="saveTurnConfig()">salvar</button>
+      </div>
+      <div class="tg-status-msg" id="turn-status-msg" style="display:none"></div>
+      <button class="btn-ghost relay-reset-btn" id="btn-turn-reset" onclick="resetTurnConfig()" style="display:none">remover configuração</button>
+    </div>
+
     <!-- Connect -->
     <div class="section">
       <div class="connection-badge" id="connection-badge">

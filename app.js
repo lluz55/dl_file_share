@@ -10,6 +10,7 @@ const LS_HISTORY    = 'relay_history';
 const LS_THEME      = 'relay_theme';
 const LS_LAST_PEER  = 'relay_last_peer';
 const LS_RELAY_URL  = 'relay_ws_url';
+const LS_TURN_CONFIG = 'relay_turn_config';
 const MAX_HISTORY   = 200;
 const MAX_DEBUG     = 120;
 
@@ -317,18 +318,37 @@ function clearLastPeer() {
   localStorage.removeItem(LS_LAST_PEER);
 }
 
-// ────────────────────────────────────────────────────────────
-// WebSocket relay
-// ────────────────────────────────────────────────────────────
+function normalizeWebSocketUrl(url) {
+  if (!url) return '';
+  url = url.trim();
+  if (url.startsWith('https://')) {
+    return url.replace(/^https:\/\//i, 'wss://');
+  }
+  if (url.startsWith('http://')) {
+    return url.replace(/^http:\/\//i, 'ws://');
+  }
+  if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+    if (url.startsWith('localhost') || url.startsWith('127.0.0.1')) {
+      return 'ws://' + url;
+    }
+    return 'wss://' + url;
+  }
+  return url;
+}
+
 function saveRelayUrl(url) {
-  relayUrl = url;
-  localStorage.setItem(LS_RELAY_URL, url);
+  const norm = normalizeWebSocketUrl(url);
+  relayUrl = norm;
+  localStorage.setItem(LS_RELAY_URL, norm);
 }
 
 async function testRelayConnection() {
   const urlInp = document.getElementById('relay-url-input');
-  const url    = urlInp ? urlInp.value.trim() : '';
+  let url      = urlInp ? urlInp.value.trim() : '';
   if (!url) { showToast('Informe a URL do relay WebSocket.'); return; }
+
+  url = normalizeWebSocketUrl(url);
+  if (urlInp) urlInp.value = url;
 
   const msgEl = document.getElementById('relay-status-msg');
   if (msgEl) { msgEl.textContent = 'testando conexão…'; msgEl.style.display = ''; msgEl.className = 'tg-status-msg'; }
@@ -380,7 +400,8 @@ function updateRelayBtnVisibility() {
 function connectRelay(url, targetId) {
   return new Promise((resolve, reject) => {
     let ws;
-    try { ws = new WebSocket(url); } catch (e) { reject(e); return; }
+    const normUrl = normalizeWebSocketUrl(url);
+    try { ws = new WebSocket(normUrl); } catch (e) { reject(e); return; }
 
     let done = false;
     const finish = (fn) => { if (done) return; done = true; clearTimeout(connectT); clearTimeout(pairT); fn(); };
@@ -430,7 +451,8 @@ function startPresence() {
   if (presenceWs && (presenceWs.readyState === 0 || presenceWs.readyState === 1)) return;
 
   let ws;
-  try { ws = new WebSocket(relayUrl); } catch { return; }
+  const normUrl = normalizeWebSocketUrl(relayUrl);
+  try { ws = new WebSocket(normUrl); } catch { return; }
   presenceWs = ws;
 
   ws.onopen = () => {
@@ -678,17 +700,44 @@ function updateQR() {
 // ────────────────────────────────────────────────────────────
 async function initPeer() {
   const savedId = localStorage.getItem(LS_PEER_ID) || generateMnemonicId();
+
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302'  },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478'  },
+    // Default public TURN server as a fallback
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp'
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
+  ];
+
+  // Try loading custom TURN config from localStorage
+  const savedTurn = localStorage.getItem(LS_TURN_CONFIG);
+  if (savedTurn) {
+    try {
+      const parsed = JSON.parse(savedTurn);
+      if (parsed && parsed.urls) {
+        iceServers.push(parsed);
+        debugLog('info', `TURN custom loaded: ${Array.isArray(parsed.urls) ? parsed.urls[0] : parsed.urls}`);
+      }
+    } catch (e) {
+      debugLog('error', `Failed to parse custom TURN config: ${e.message}`);
+    }
+  }
+
   peer = new Peer(savedId, {
     debug: 1,
     config: {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302'  },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' },
-        { urls: 'stun:stun.cloudflare.com:3478'  },
-      ]
+      iceServers: iceServers
     }
   });
 
@@ -715,6 +764,26 @@ async function initPeer() {
       updateRelayBtnVisibility();
       debugLog('info', `relay URL loaded: ${savedRelayUrl}`);
       startPresence(); // listen for inbound relay connections from the start
+    }
+
+    // Load TURN config to fill input
+    if (savedTurn) {
+      try {
+        const parsed = JSON.parse(savedTurn);
+        const inp = document.getElementById('turn-config-input');
+        if (inp && parsed && parsed.urls) {
+          let val = parsed.urls;
+          if (parsed.username && parsed.credential) {
+            const parts = parsed.urls.split(':');
+            const scheme = parts[0] + ':';
+            const remainder = parts.slice(1).join(':');
+            val = `${scheme}${parsed.username}:${parsed.credential}@${remainder}`;
+          }
+          inp.value = val;
+          const resetBtn = document.getElementById('btn-turn-reset');
+          if (resetBtn) resetBtn.style.display = '';
+        }
+      } catch {}
     }
 
     updateQR();
@@ -829,6 +898,83 @@ async function initPeer() {
       document.getElementById('btn-connect').disabled = false;
     }
   });
+}
+
+function saveTurnConfig() {
+  const inp = document.getElementById('turn-config-input');
+  const val = inp ? inp.value.trim() : '';
+  const msgEl = document.getElementById('turn-status-msg');
+
+  if (!val) {
+    showToast('Informe a URL do servidor TURN.');
+    return;
+  }
+
+  let url = val;
+  let username = '';
+  let credential = '';
+
+  const regex = /^(turns?:)([^:@]+):([^:@]+)@(.+)$/i;
+  const match = val.match(regex);
+  if (match) {
+    const scheme = match[1];
+    username = match[2];
+    credential = match[3];
+    const hostPort = match[4];
+    url = `${scheme}${hostPort}`;
+  }
+
+  if (!url.toLowerCase().startsWith('turn:') && !url.toLowerCase().startsWith('turns:')) {
+    if (msgEl) {
+      msgEl.textContent = 'Erro: O formato deve iniciar com "turn:" ou "turns:"';
+      msgEl.className = 'tg-status-msg error';
+      msgEl.style.display = '';
+    }
+    return;
+  }
+
+  const config = { urls: url };
+  if (username) config.username = username;
+  if (credential) config.credential = credential;
+
+  localStorage.setItem(LS_TURN_CONFIG, JSON.stringify(config));
+
+  if (msgEl) {
+    msgEl.textContent = 'Configuração do TURN salva! Reiniciando conexão para aplicar...';
+    msgEl.className = 'tg-status-msg';
+    msgEl.style.display = '';
+  }
+
+  const resetBtn = document.getElementById('btn-turn-reset');
+  if (resetBtn) resetBtn.style.display = '';
+
+  showToast('Servidor TURN configurado');
+
+  if (peer) {
+    peer.destroy();
+    initPeer();
+  }
+}
+
+function resetTurnConfig() {
+  if (!confirm('Remover configuração do servidor TURN?')) return;
+  localStorage.removeItem(LS_TURN_CONFIG);
+
+  const inp = document.getElementById('turn-config-input');
+  if (inp) inp.value = '';
+
+  const msgEl = document.getElementById('turn-status-msg');
+  if (msgEl) msgEl.style.display = 'none';
+
+  const resetBtn = document.getElementById('btn-turn-reset');
+  if (resetBtn) resetBtn.style.display = 'none';
+
+  showToast('Configuração TURN removida');
+
+  if (peer) {
+    peer.destroy();
+    initPeer();
+  }
 }
 
 function connectToPeer() {
