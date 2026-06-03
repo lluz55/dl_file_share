@@ -833,6 +833,7 @@ function onDisconnected() {
   incoming   = {};
   sendQueue  = [];
   isSending  = false;
+  document.getElementById('btn-connect').disabled = false;
   updateRelayBtnVisibility();
 }
 
