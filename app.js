@@ -680,8 +680,11 @@ async function initPeer() {
     const serverErrors = ['network', 'server-error', 'socket-error', 'socket-closed'];
     if (serverErrors.includes(err.type)) {
       const detail = err.message ? err.message.split('\n')[0].slice(0, 50) : err.type;
+      connectTarget  = null;
+      connectRetries = 0;
       setStatus('error', detail);
       showToast(`Erro de rede: ${err.type}`);
+      document.getElementById('btn-connect').disabled = false;
       return;
     }
 
