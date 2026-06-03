@@ -202,7 +202,7 @@ function scheduleReconnect(target, delay = 2000) {
     if (conn && conn.open) return;
     connectTarget  = target;
     connectRetries = 0;
-    doConnect();
+    doConnect(false);
   }, delay);
 }
 
@@ -332,6 +332,7 @@ async function testRelayConnection() {
   const msgEl = document.getElementById('relay-status-msg');
   if (msgEl) { msgEl.textContent = 'testando conexão…'; msgEl.style.display = ''; msgEl.className = 'tg-status-msg'; }
 
+  debugLog('info', `relay test: conectando a ${url}`);
   try {
     await new Promise((resolve, reject) => {
       const ws = new WebSocket(url);
@@ -344,9 +345,10 @@ async function testRelayConnection() {
     const resetBtn = document.getElementById('btn-relay-reset');
     if (resetBtn) resetBtn.style.display = '';
     updateRelayBtnVisibility();
-    debugLog('info', `relay URL saved: ${url}`);
+    debugLog('info', `relay test: sucesso · URL salva: ${url}`);
   } catch (e) {
     if (msgEl) { msgEl.textContent = 'Erro: ' + e.message; msgEl.className = 'tg-status-msg error'; }
+    debugLog('error', `relay test: falhou · ${e.message}`);
   }
 }
 
@@ -718,14 +720,14 @@ function connectToPeer() {
   doConnect();
 }
 
-function doConnect() {
+function doConnect(disableBtn = true) {
   const tid = connectTarget;
   if (!tid || !peer || !myId) return;
 
   const label = connectRetries > 0 ? ` (tentativa ${connectRetries + 1}/${MAX_RETRIES + 1})` : '';
   debugLog('conn', `connecting to ${tid}${label}`);
   setStatus('connecting', connectRetries > 0 ? `reconectando… ${connectRetries + 1}` : 'conectando…');
-  document.getElementById('btn-connect').disabled = true;
+  if (disableBtn) document.getElementById('btn-connect').disabled = true;
 
   if (conn) { conn.close(); conn = null; }
   conn = peer.connect(tid, { reliable: true });
