@@ -376,31 +376,41 @@ function connectRelay(url, peerId) {
     let ws;
     try { ws = new WebSocket(url); } catch (e) { reject(e); return; }
 
-    const timeout = setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 10000);
+    let done = false;
+    const finish = (fn) => { if (done) return; done = true; clearTimeout(connectT); clearTimeout(pairT); fn(); };
+
+    // Phase 1: WS must open within 8s
+    const connectT = setTimeout(() => finish(() => { ws.close(); reject(new Error('timeout')); }), 8000);
+    let pairT = null;
 
     ws.onopen = () => {
+      clearTimeout(connectT);
       const roomId = [myId, peerId].sort().join(':');
       ws.send(JSON.stringify({ type: 'join', room: roomId, peerId: myId }));
+      // Phase 2: wait up to 90s for the other peer to join the room
+      pairT = setTimeout(() => finish(() => { ws.close(); reject(new Error('peer não entrou no relay')); }), 90000);
+      setStatus('connecting', 'aguardando peer no relay…');
     };
 
     ws.onmessage = e => {
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'joined') {
-        clearTimeout(timeout);
-        relayWs = ws;
-        ws.onmessage = ev => handleRelayMessage(ev.data);
-        ws.onclose   = ()  => onRelayDisconnected(false);
-        ws.onerror   = ()  => onRelayDisconnected(false);
-        resolve(msg.peerPeerId);
+        finish(() => {
+          relayWs = ws;
+          ws.onmessage = ev => handleRelayMessage(ev.data);
+          ws.onclose   = ()  => onRelayDisconnected(false);
+          ws.onerror   = ()  => onRelayDisconnected(false);
+          resolve(msg.peerPeerId);
+        });
+      } else if (msg.type === 'waiting') {
+        debugLog('info', 'relay: na sala, aguardando peer…');
       } else if (msg.type === 'error') {
-        clearTimeout(timeout);
-        ws.close();
-        reject(new Error(msg.code || 'relay error'));
+        finish(() => { ws.close(); reject(new Error(msg.code || 'relay error')); });
       }
     };
-    ws.onerror = () => { clearTimeout(timeout); reject(new Error('ws error')); };
-    ws.onclose = () => { clearTimeout(timeout); reject(new Error('ws closed')); };
+    ws.onerror = () => finish(() => reject(new Error('ws error')));
+    ws.onclose = () => finish(() => reject(new Error('ws closed')));
   });
 }
 

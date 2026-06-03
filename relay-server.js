@@ -96,6 +96,7 @@ function handleJoin(ws, msg) {
     ws._roomId = roomId;
     ws._peerId = peerId;
     ws._slot   = 'a';
+    send(ws, { type: 'waiting' });
     console.log(`[room ${roomId.slice(0,12)}…] waiting a=${peerId}`);
   }
 }
