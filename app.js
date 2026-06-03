@@ -10,7 +10,6 @@ const LS_HISTORY    = 'relay_history';
 const LS_THEME      = 'relay_theme';
 const LS_LAST_PEER  = 'relay_last_peer';
 const LS_RELAY_URL  = 'relay_ws_url';
-const LS_TURN_CONFIG = 'relay_turn_config';
 const MAX_HISTORY   = 200;
 const MAX_DEBUG     = 120;
 
@@ -720,20 +719,6 @@ async function initPeer() {
     }
   ];
 
-  // Try loading custom TURN config from localStorage
-  const savedTurn = localStorage.getItem(LS_TURN_CONFIG);
-  if (savedTurn) {
-    try {
-      const parsed = JSON.parse(savedTurn);
-      if (parsed && parsed.urls) {
-        iceServers.push(parsed);
-        debugLog('info', `TURN custom loaded: ${Array.isArray(parsed.urls) ? parsed.urls[0] : parsed.urls}`);
-      }
-    } catch (e) {
-      debugLog('error', `Failed to parse custom TURN config: ${e.message}`);
-    }
-  }
-
   peer = new Peer(savedId, {
     debug: 1,
     config: {
@@ -766,26 +751,6 @@ async function initPeer() {
       updateRelayBtnVisibility();
       debugLog('info', `relay URL loaded: ${effectiveRelayUrl}`);
       startPresence(); // listen for inbound relay connections from the start
-    }
-
-    // Load TURN config to fill input
-    if (savedTurn) {
-      try {
-        const parsed = JSON.parse(savedTurn);
-        const inp = document.getElementById('turn-config-input');
-        if (inp && parsed && parsed.urls) {
-          let val = parsed.urls;
-          if (parsed.username && parsed.credential) {
-            const parts = parsed.urls.split(':');
-            const scheme = parts[0] + ':';
-            const remainder = parts.slice(1).join(':');
-            val = `${scheme}${parsed.username}:${parsed.credential}@${remainder}`;
-          }
-          inp.value = val;
-          const resetBtn = document.getElementById('btn-turn-reset');
-          if (resetBtn) resetBtn.style.display = '';
-        }
-      } catch {}
     }
 
     updateQR();
@@ -900,83 +865,6 @@ async function initPeer() {
       document.getElementById('btn-connect').disabled = false;
     }
   });
-}
-
-function saveTurnConfig() {
-  const inp = document.getElementById('turn-config-input');
-  const val = inp ? inp.value.trim() : '';
-  const msgEl = document.getElementById('turn-status-msg');
-
-  if (!val) {
-    showToast('Informe a URL do servidor TURN.');
-    return;
-  }
-
-  let url = val;
-  let username = '';
-  let credential = '';
-
-  const regex = /^(turns?:)([^:@]+):([^:@]+)@(.+)$/i;
-  const match = val.match(regex);
-  if (match) {
-    const scheme = match[1];
-    username = match[2];
-    credential = match[3];
-    const hostPort = match[4];
-    url = `${scheme}${hostPort}`;
-  }
-
-  if (!url.toLowerCase().startsWith('turn:') && !url.toLowerCase().startsWith('turns:')) {
-    if (msgEl) {
-      msgEl.textContent = 'Erro: O formato deve iniciar com "turn:" ou "turns:"';
-      msgEl.className = 'tg-status-msg error';
-      msgEl.style.display = '';
-    }
-    return;
-  }
-
-  const config = { urls: url };
-  if (username) config.username = username;
-  if (credential) config.credential = credential;
-
-  localStorage.setItem(LS_TURN_CONFIG, JSON.stringify(config));
-
-  if (msgEl) {
-    msgEl.textContent = 'Configuração do TURN salva! Reiniciando conexão para aplicar...';
-    msgEl.className = 'tg-status-msg';
-    msgEl.style.display = '';
-  }
-
-  const resetBtn = document.getElementById('btn-turn-reset');
-  if (resetBtn) resetBtn.style.display = '';
-
-  showToast('Servidor TURN configurado');
-
-  if (peer) {
-    peer.destroy();
-    initPeer();
-  }
-}
-
-function resetTurnConfig() {
-  if (!confirm('Remover configuração do servidor TURN?')) return;
-  localStorage.removeItem(LS_TURN_CONFIG);
-
-  const inp = document.getElementById('turn-config-input');
-  if (inp) inp.value = '';
-
-  const msgEl = document.getElementById('turn-status-msg');
-  if (msgEl) msgEl.style.display = 'none';
-
-  const resetBtn = document.getElementById('btn-turn-reset');
-  if (resetBtn) resetBtn.style.display = 'none';
-
-  showToast('Configuração TURN removida');
-
-  if (peer) {
-    peer.destroy();
-    initPeer();
-  }
 }
 
 function connectToPeer() {

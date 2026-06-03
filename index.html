@@ -57,9 +57,9 @@
       </div>
     </div>
 
-    <!-- WebSocket Relay -->
+    <!-- WebSocket Relay / TURN Fallback -->
     <div class="card">
-      <div class="label">relay websocket</div>
+      <div class="label">servidor TURN (fallback)</div>
       <p class="relay-hint">Canal de fallback quando o P2P falhar. Inicie <code>relay-server.js</code> localmente e exponha via Cloudflare Tunnel.</p>
       <div class="connect-row" style="margin-top:12px">
         <input class="input" id="relay-url-input" type="text"
@@ -70,21 +70,6 @@
       </div>
       <div class="tg-status-msg" id="relay-status-msg" style="display:none"></div>
       <button class="btn-ghost relay-reset-btn" id="btn-relay-reset" onclick="resetRelay()" style="display:none">remover configuração</button>
-    </div>
-
-    <!-- TURN Server -->
-    <div class="card">
-      <div class="label">servidor TURN (WebRTC)</div>
-      <p class="relay-hint">Canal alternativo nativo para contornar NATs simétricos e firewalls corporativos restritivos.</p>
-      <div class="connect-row" style="margin-top:12px">
-        <input class="input" id="turn-config-input" type="text"
-               placeholder="turn:usuario:senha@domain:port"
-               autocomplete="off" spellcheck="false"
-               onkeydown="if(event.key==='Enter') saveTurnConfig()">
-        <button class="btn-ghost" onclick="saveTurnConfig()">salvar</button>
-      </div>
-      <div class="tg-status-msg" id="turn-status-msg" style="display:none"></div>
-      <button class="btn-ghost relay-reset-btn" id="btn-turn-reset" onclick="resetTurnConfig()" style="display:none">remover configuração</button>
     </div>
 
     <!-- Connect -->
