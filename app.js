@@ -680,11 +680,20 @@ async function initPeer() {
     const serverErrors = ['network', 'server-error', 'socket-error', 'socket-closed'];
     if (serverErrors.includes(err.type)) {
       const detail = err.message ? err.message.split('\n')[0].slice(0, 50) : err.type;
+      const target = connectTarget;
       connectTarget  = null;
       connectRetries = 0;
-      setStatus('error', detail);
-      showToast(`Erro de rede: ${err.type}`);
-      document.getElementById('btn-connect').disabled = false;
+      if (relayUrl && target) {
+        debugLog('info', `P2P server error — fallback relay para ${target}`);
+        showToast('P2P indisponível — tentando relay…');
+        lastPeerId = target;
+        document.getElementById('peer-input').value = target;
+        switchToRelayMode();
+      } else {
+        setStatus('error', detail);
+        showToast(`Erro de rede: ${err.type}`);
+        document.getElementById('btn-connect').disabled = false;
+      }
       return;
     }
 
@@ -697,26 +706,45 @@ async function initPeer() {
       return;
     }
 
-    const msg = err.type === 'peer-unavailable'
-      ? `ID não encontrado após ${MAX_RETRIES + 1} tentativas`
-      : err.message || err.type || 'erro de conexão';
+    const target = connectTarget;
     connectTarget  = null;
     connectRetries = 0;
-    setStatus('ready', 'pronto');
-    showToast('Erro: ' + msg);
-    document.getElementById('btn-connect').disabled = false;
+    if (relayUrl && target) {
+      debugLog('info', `P2P falhou após ${MAX_RETRIES + 1} tentativas — fallback relay para ${target}`);
+      showToast('Peer não encontrado via P2P — tentando relay…');
+      lastPeerId = target;
+      document.getElementById('peer-input').value = target;
+      switchToRelayMode();
+    } else {
+      const msg = err.type === 'peer-unavailable'
+        ? `ID não encontrado após ${MAX_RETRIES + 1} tentativas`
+        : err.message || err.type || 'erro de conexão';
+      setStatus('ready', 'pronto');
+      showToast('Erro: ' + msg);
+      document.getElementById('btn-connect').disabled = false;
+    }
   });
 }
 
 function connectToPeer() {
   const tid = document.getElementById('peer-input').value.trim();
-  if (!tid || !peer || !myId) return;
-  if (tid === myId) { showToast('Esse é o seu próprio ID.'); return; }
+  if (!tid) return;
+  if (tid === (myId || localStorage.getItem(LS_PEER_ID))) { showToast('Esse é o seu próprio ID.'); return; }
 
   if (conn && conn.open && conn.peer === tid) {
     debugLog('info', `already connected to ${tid}`);
     return;
   }
+
+  // PeerJS not ready but relay is configured — go straight to relay
+  if ((!peer || !myId) && relayUrl) {
+    debugLog('info', `PeerJS não pronto — usando relay direto para ${tid}`);
+    lastPeerId = tid;
+    switchToRelayMode();
+    return;
+  }
+
+  if (!peer || !myId) return;
 
   connectTarget  = tid;
   connectRetries = 0;
