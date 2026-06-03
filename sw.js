@@ -1,4 +1,4 @@
-const CACHE_NAME = 'relay-cache-v1';
+const CACHE_NAME = 'relay-cache-v2';
 const ASSETS = [
   './',
   './index.html',
