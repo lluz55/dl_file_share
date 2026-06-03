@@ -845,18 +845,31 @@ function setupConn() {
     clearTimeout(_connTimeout);
     stopHeartbeat();
     debugLog('conn', 'closed');
-    const target = lastPeerId;
-    onDisconnected();
-    if (target) scheduleReconnect(target);
+    const target = lastPeerId || (conn && conn.peer);
+    if (relayUrl && !relayMode && target && !lastPeerId) {
+      lastPeerId = target;
+      onDisconnected();
+      setTimeout(switchToRelayMode, 500);
+    } else {
+      onDisconnected();
+      if (target) scheduleReconnect(target);
+    }
   });
 
   conn.on('error', e => {
     clearTimeout(_connTimeout);
     stopHeartbeat();
     debugLog('error', `conn · ${e.message || e.type || String(e)}`);
-    const target = lastPeerId;
-    onDisconnected();
-    if (target) scheduleReconnect(target);
+    const target = lastPeerId || (conn && conn.peer);
+    if (relayUrl && !relayMode && target) {
+      lastPeerId = target;
+      onDisconnected();
+      debugLog('info', `conn error — fallback relay para ${target}`);
+      setTimeout(switchToRelayMode, 500);
+    } else {
+      onDisconnected();
+      if (target) scheduleReconnect(target);
+    }
   });
 }
 
