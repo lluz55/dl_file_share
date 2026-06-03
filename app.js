@@ -1372,6 +1372,14 @@ class Trie {
     }
     node.isEndOfWord = true;
   }
+  search(word) {
+    let node = this.root;
+    for (let char of word) {
+      if (!node.children[char]) return false;
+      node = node.children[char];
+    }
+    return node.isEndOfWord;
+  }
   searchPrefix(prefix, maxResults = 6) {
     let node = this.root;
     for (let char of prefix) {
@@ -1551,12 +1559,30 @@ function initAutocomplete() {
       debugLog('info', `autocomplete input: val="${val}", caret=${caret}, hasContext=${!!autocompleteContext}`);
 
       if (!autocompleteContext) {
-        closeAutocomplete();
+        // Value may already be a bare 4-word Cloudflare slug without suffix
+        const completed = buildCloudflareSuffix(urlInp);
+        if (completed) {
+          urlInp.value = completed;
+          closeAutocomplete();
+        } else {
+          closeAutocomplete();
+        }
         return;
       }
 
       const onFourthWord = autocompleteContext.wordsBefore.length >= CF_WORD_COUNT - 1;
       const query = autocompleteContext.currentWord.toLowerCase();
+
+      // Auto-complete when the 4th (or beyond) word is an exact dictionary word
+      if (onFourthWord && query.length >= 2 && autocompleteTrie.search(query)) {
+        const prefix = autocompleteContext.urlPrefix || 'wss://';
+        const allWords = [...autocompleteContext.wordsBefore, query];
+        urlInp.value = prefix + allWords.join('-') + CF_SUFFIX;
+        closeAutocomplete();
+        debugLog('info', `autocomplete auto-completed to: ${urlInp.value}`);
+        return;
+      }
+
       const matches = autocompleteTrie.searchPrefix(query, 6);
       debugLog('info', `autocomplete match: query="${query}", found=${matches.length}, onFourthWord=${onFourthWord}`);
       showAutocompleteSuggestions(matches, onFourthWord);
@@ -1573,13 +1599,18 @@ function initAutocomplete() {
 
   urlInp.addEventListener('keydown', (e) => {
     // Intercept '-' typed after 4+ words → append suffix instead
-    if (e.key === '-' && autocompleteContext && autocompleteContext.wordsBefore.length >= CF_WORD_COUNT - 1) {
-      const candidateSuffix = buildCloudflareSuffix(urlInp);
-      if (candidateSuffix) {
-        e.preventDefault();
-        urlInp.value = candidateSuffix;
-        closeAutocomplete();
-        return;
+    if (e.key === '-') {
+      // Parse the current value directly (don't rely on potentially stale autocompleteContext)
+      const curVal = urlInp.value;
+      const parts = curVal.replace(/^wss?:\/\//i, '').split('-');
+      if (parts.length >= CF_WORD_COUNT && parts.every(p => /^[a-zA-Z0-9]+$/.test(p))) {
+        const candidateSuffix = buildCloudflareSuffix(urlInp);
+        if (candidateSuffix) {
+          e.preventDefault();
+          urlInp.value = candidateSuffix;
+          closeAutocomplete();
+          return;
+        }
       }
     }
 
