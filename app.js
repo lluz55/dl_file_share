@@ -1439,12 +1439,47 @@ function getAutocompleteContext(value, caretPos) {
   };
 }
 
-function showAutocompleteSuggestions(suggestions) {
+const CF_SUFFIX = '.trycloudflare.com';
+const CF_WORD_COUNT = 4;
+
+function buildCloudflareSuffix(urlInp) {
+  const val = urlInp.value;
+  // Match 4+ hyphen-separated word segments (letters/digits), optionally already with suffix
+  const m = val.match(/^(wss?:\/\/)?([a-zA-Z0-9]+(?:-[a-zA-Z0-9]+){3,})(?:\.trycloudflare\.com)?$/i);
+  if (!m) return null;
+  if (val.endsWith(CF_SUFFIX)) return null; // already complete, nothing to do
+  const prefix = m[1] || 'wss://';
+  return prefix + m[2].toLowerCase() + CF_SUFFIX;
+}
+
+function applyCloudflareSuffix(urlInp) {
+  const completed = buildCloudflareSuffix(urlInp);
+  if (!completed) return false;
+  urlInp.value = completed;
+  closeAutocomplete();
+  return true;
+}
+
+function showAutocompleteSuggestions(suggestions, onFourthWord) {
   const listEl = document.getElementById('relay-autocomplete-list');
   if (!listEl) return;
 
   listEl.innerHTML = '';
-  if (suggestions.length === 0) {
+
+  if (onFourthWord) {
+    const hint = document.createElement('div');
+    hint.className = 'suggestion-item suggestion-item--domain';
+    hint.textContent = '↵ ' + CF_SUFFIX;
+    hint.title = 'Pressione Tab ou clique para completar o link';
+    hint.onclick = (e) => {
+      e.preventDefault();
+      const urlInp = document.getElementById('relay-url-input');
+      if (urlInp) applyCloudflareSuffix(urlInp);
+    };
+    listEl.appendChild(hint);
+  }
+
+  if (suggestions.length === 0 && !onFourthWord) {
     listEl.style.display = 'none';
     activeSuggestionIndex = -1;
     return;
@@ -1507,27 +1542,47 @@ function initAutocomplete() {
 
   urlInp.addEventListener('input', (e) => {
     clearTimeout(searchTimeout);
-    
+
     searchTimeout = setTimeout(() => {
       const val = urlInp.value;
       const caret = urlInp.selectionStart;
-      
+
       autocompleteContext = getAutocompleteContext(val, caret);
       debugLog('info', `autocomplete input: val="${val}", caret=${caret}, hasContext=${!!autocompleteContext}`);
-      
+
       if (!autocompleteContext) {
         closeAutocomplete();
         return;
       }
 
+      const onFourthWord = autocompleteContext.wordsBefore.length >= CF_WORD_COUNT - 1;
       const query = autocompleteContext.currentWord.toLowerCase();
       const matches = autocompleteTrie.searchPrefix(query, 6);
-      debugLog('info', `autocomplete match: query="${query}", found=${matches.length}`);
-      showAutocompleteSuggestions(matches);
+      debugLog('info', `autocomplete match: query="${query}", found=${matches.length}, onFourthWord=${onFourthWord}`);
+      showAutocompleteSuggestions(matches, onFourthWord);
     }, 100);
   });
 
+  urlInp.addEventListener('blur', () => {
+    // Delay so suggestion item onclick fires before we close/transform the value
+    setTimeout(() => {
+      applyCloudflareSuffix(urlInp);
+      closeAutocomplete();
+    }, 150);
+  });
+
   urlInp.addEventListener('keydown', (e) => {
+    // Intercept '-' typed after 4+ words → append suffix instead
+    if (e.key === '-' && autocompleteContext && autocompleteContext.wordsBefore.length >= CF_WORD_COUNT - 1) {
+      const candidateSuffix = buildCloudflareSuffix(urlInp);
+      if (candidateSuffix) {
+        e.preventDefault();
+        urlInp.value = candidateSuffix;
+        closeAutocomplete();
+        return;
+      }
+    }
+
     const items = listEl.querySelectorAll('.suggestion-item');
     if (listEl.style.display === 'block' && items.length > 0) {
       if (e.key === 'ArrowDown') {
@@ -1539,12 +1594,33 @@ function initAutocomplete() {
         activeSuggestionIndex = (activeSuggestionIndex - 1 + items.length) % items.length;
         updateActiveSuggestion(items);
       } else if (e.key === 'Enter' || e.key === 'Tab') {
+        // If on 4th word and domain hint is first item (index 0), apply suffix
+        if (autocompleteContext && autocompleteContext.wordsBefore.length >= CF_WORD_COUNT - 1 &&
+            activeSuggestionIndex <= 0) {
+          const completed = buildCloudflareSuffix(urlInp);
+          if (completed) {
+            e.preventDefault();
+            urlInp.value = completed;
+            closeAutocomplete();
+            return;
+          }
+        }
         if (activeSuggestionIndex >= 0 && activeSuggestionIndex < items.length) {
           e.preventDefault();
-          applyAutocompleteSuggestion(items[activeSuggestionIndex].textContent);
+          const txt = items[activeSuggestionIndex].textContent;
+          if (txt.startsWith('↵ ')) {
+            applyCloudflareSuffix(urlInp);
+          } else {
+            applyAutocompleteSuggestion(txt);
+          }
         } else if (items.length > 0) {
           e.preventDefault();
-          applyAutocompleteSuggestion(items[0].textContent);
+          const txt = items[0].textContent;
+          if (txt.startsWith('↵ ')) {
+            applyCloudflareSuffix(urlInp);
+          } else {
+            applyAutocompleteSuggestion(txt);
+          }
         }
       } else if (e.key === 'Escape') {
         e.preventDefault();

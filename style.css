@@ -766,3 +766,16 @@ header {
   background: rgba(255, 255, 255, 0.08);
   color: #00f2fe;
 }
+
+.suggestion-item--domain {
+  color: #00f2fe;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-style: italic;
+  letter-spacing: 0.01em;
+}
+
+.suggestion-item--domain:hover,
+.suggestion-item--domain.active {
+  background: rgba(0, 242, 254, 0.12);
+  color: #fff;
+}
