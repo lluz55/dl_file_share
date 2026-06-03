@@ -52,6 +52,7 @@ let relayUrl                = null;
 let _relayConnecting        = false; // true while connectRelay is pending
 let _relayReconnectTimer    = null;
 let _relayReconnectAttempts = 0;
+let presenceWs              = null;  // passive listener on room=myId (rendezvous)
 
 // ────────────────────────────────────────────────────────────
 // Crypto helpers
@@ -345,6 +346,7 @@ async function testRelayConnection() {
     const resetBtn = document.getElementById('btn-relay-reset');
     if (resetBtn) resetBtn.style.display = '';
     updateRelayBtnVisibility();
+    startPresence(); // begin listening now that a relay URL is configured
     debugLog('info', `relay test: sucesso · URL salva: ${url}`);
   } catch (e) {
     if (msgEl) { msgEl.textContent = 'Erro: ' + e.message; msgEl.className = 'tg-status-msg error'; }
@@ -356,6 +358,7 @@ function resetRelay() {
   if (!confirm('Remover configuração do relay?')) return;
   localStorage.removeItem(LS_RELAY_URL);
   relayUrl = null;
+  stopPresence();
   disconnectRelay();
   const urlInp = document.getElementById('relay-url-input');
   if (urlInp) urlInp.value = '';
@@ -371,7 +374,10 @@ function updateRelayBtnVisibility() {
   if (btn) btn.style.display = (relayUrl && !relayMode) ? '' : 'none';
 }
 
-function connectRelay(url, peerId) {
+// Initiator side: join a room named after the TARGET peer's id. The target is
+// passively listening on that same room via startPresence(), so the relay pairs
+// us even when PeerJS signalling never delivered the connection (peer-unavailable).
+function connectRelay(url, targetId) {
   return new Promise((resolve, reject) => {
     let ws;
     try { ws = new WebSocket(url); } catch (e) { reject(e); return; }
@@ -385,24 +391,24 @@ function connectRelay(url, peerId) {
 
     ws.onopen = () => {
       clearTimeout(connectT);
-      const roomId = [myId, peerId].sort().join(':');
-      ws.send(JSON.stringify({ type: 'join', room: roomId, peerId: myId }));
+      ws.send(JSON.stringify({ type: 'join', room: targetId, peerId: myId }));
       // Phase 2: wait up to 90s for the other peer to join the room
       pairT = setTimeout(() => finish(() => { ws.close(); reject(new Error('peer não entrou no relay')); }), 90000);
       setStatus('connecting', 'aguardando peer no relay…');
     };
 
-    ws.onmessage = e => {
+    ws.onmessage = async e => {
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
+      if (msg.type === 'ping') {
+        if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'pong' }));
+        return;
+      }
       if (msg.type === 'joined') {
-        finish(() => {
-          relayWs = ws;
-          ws.onmessage = ev => handleRelayMessage(ev.data);
-          ws.onclose   = ()  => onRelayDisconnected(false);
-          ws.onerror   = ()  => onRelayDisconnected(false);
-          resolve(msg.peerPeerId);
-        });
+        if (done) return;
+        done = true; clearTimeout(connectT); clearTimeout(pairT);
+        await enterRelayMode(ws, msg.peerPeerId);
+        resolve(msg.peerPeerId);
       } else if (msg.type === 'waiting') {
         debugLog('info', 'relay: na sala, aguardando peer…');
       } else if (msg.type === 'error') {
@@ -412,6 +418,63 @@ function connectRelay(url, peerId) {
     ws.onerror = () => finish(() => reject(new Error('ws error')));
     ws.onclose = () => finish(() => reject(new Error('ws closed')));
   });
+}
+
+// Passive rendezvous listener: sit in a room named after our OWN id, waiting for
+// any peer to initiate a relay connection toward us. Always-on (while a relay URL
+// is configured and we're idle) so we're reachable even if our PeerJS signalling
+// link is down. Idempotent and self-healing.
+function startPresence() {
+  if (!relayUrl || !myId) return;
+  if (relayMode || _relayConnecting) return;
+  if (presenceWs && (presenceWs.readyState === 0 || presenceWs.readyState === 1)) return;
+
+  let ws;
+  try { ws = new WebSocket(relayUrl); } catch { return; }
+  presenceWs = ws;
+
+  ws.onopen = () => {
+    if (presenceWs !== ws) { ws.close(); return; }
+    ws.send(JSON.stringify({ type: 'join', room: myId, peerId: myId }));
+    debugLog('info', 'relay presence: escutando no relay…');
+  };
+
+  ws.onmessage = async e => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type === 'ping') {
+      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'pong' }));
+      return;
+    }
+    if (msg.type === 'waiting') return;
+    if (msg.type === 'joined') {
+      // A peer reached us through the relay — promote this socket to the active link.
+      presenceWs = null; // detach so enterRelayMode doesn't close the socket we're keeping
+      debugLog('info', `relay presence: peer ${msg.peerPeerId} conectou via relay`);
+      await enterRelayMode(ws, msg.peerPeerId);
+      return;
+    }
+    if (msg.type === 'error') {
+      // e.g. self-join (same id in another tab) or room-full — stop quietly, no retry loop.
+      debugLog('info', `relay presence: ${msg.code || 'error'}`);
+      if (presenceWs === ws) presenceWs = null;
+      ws.close();
+    }
+  };
+
+  ws.onclose = () => {
+    if (presenceWs === ws) { presenceWs = null; setTimeout(startPresence, 3000); }
+  };
+  ws.onerror = () => {}; // onclose will follow and handle retry
+}
+
+function stopPresence() {
+  if (!presenceWs) return;
+  const p = presenceWs;
+  presenceWs = null;
+  p.onclose = null;
+  p.onerror = null;
+  try { p.close(); } catch {}
 }
 
 function disconnectRelay() {
@@ -430,30 +493,21 @@ async function switchToRelayMode() {
   if (_relayConnecting || relayMode) return;
   _relayConnecting = true;
 
-  // Close any dangling socket from a previous attempt
+  // Close any dangling active socket from a previous attempt (presence stays up).
   disconnectRelay();
 
   const url = relayUrl || (document.getElementById('relay-url-input') || {}).value || '';
-  if (!url) { _relayConnecting = false; showToast('Configure a URL do relay WebSocket antes.'); return; }
+  if (!url) { _relayConnecting = false; showToast('Configure a URL do relay WebSocket antes.'); startPresence(); return; }
 
   const pid = lastPeerId || connectTarget || (conn && conn.peer)
     || document.getElementById('peer-input').value.trim();
-  if (!pid) { _relayConnecting = false; showToast('Informe o ID do peer antes de usar o relay.'); return; }
+  if (!pid) { _relayConnecting = false; showToast('Informe o ID do peer antes de usar o relay.'); startPresence(); return; }
 
   debugLog('info', `switching to WS relay · peer=${pid}`);
 
-  stopHeartbeat();
-  if (conn) { const c = conn; conn = null; c.close(); }
-  connectTarget  = null;
-  connectRetries = 0;
-
-  if (!channelKey) {
-    channelKey = await deriveKey([myId, pid].sort().join(':'), SALT_CHANNEL);
-    debugLog('info', 'channel key derived for relay');
-  }
-
   try {
     setStatus('connecting', 'relay ws…');
+    // On success, connectRelay → enterRelayMode sets all state/UI and clears _relayConnecting.
     await connectRelay(url, pid);
   } catch (e) {
     _relayConnecting = false;
@@ -461,16 +515,48 @@ async function switchToRelayMode() {
     showToast('Relay falhou: ' + e.message);
     setStatus('ready', 'pronto');
     channelKey = null;
+    startPresence(); // resume listening so the peer can still reach us
+  }
+}
+
+// Shared transition into relay mode, used by both roles:
+//  - initiator: ws is the outbound socket from connectRelay (room = target id)
+//  - listener:  ws is the presence socket that just got paired (room = my id)
+// partnerId is the other peer's id, learned from the relay's `joined` message.
+async function enterRelayMode(ws, partnerId) {
+  if (relayMode) {
+    // Already connected (glare) — drop the redundant socket.
+    if (ws !== relayWs) { try { ws.close(); } catch {} }
     return;
   }
 
+  // Tear down any in-flight P2P attempt and pending timers.
+  stopHeartbeat();
+  clearTimeout(_relayReconnectTimer);
+  _relayReconnectTimer = null;
+  if (conn) { const c = conn; conn = null; c.close(); }
+  connectTarget  = null;
+  connectRetries = 0;
+
+  // Close a stray presence socket (initiator case: ws is the outbound socket).
+  if (presenceWs && presenceWs !== ws) stopPresence();
+
+  relayWs = ws;
+  if (!channelKey) {
+    channelKey = await deriveKey([myId, partnerId].sort().join(':'), SALT_CHANNEL);
+    debugLog('info', 'channel key derived for relay');
+  }
+  ws.onmessage = ev => handleRelayMessage(ev.data);
+  ws.onclose   = ()  => onRelayDisconnected(false);
+  ws.onerror   = ()  => onRelayDisconnected(false);
+
   _relayConnecting = false;
-  lastPeerId = pid;
+  lastPeerId = partnerId;
   relayMode  = true;
   _relayReconnectAttempts = 0;
   persistLastPeer();
 
-  const short = pid.length > 16 ? pid.slice(0, 14) + '…' : pid;
+  const short = partnerId.length > 16 ? partnerId.slice(0, 14) + '…' : partnerId;
   document.getElementById('peer-id-badge').textContent = short;
   document.getElementById('connection-badge').classList.add('visible', 'relay-mode');
   document.getElementById('connect-form').style.display = 'none';
@@ -628,6 +714,7 @@ async function initPeer() {
       if (resetBtn) resetBtn.style.display = '';
       updateRelayBtnVisibility();
       debugLog('info', `relay URL loaded: ${savedRelayUrl}`);
+      startPresence(); // listen for inbound relay connections from the start
     }
 
     updateQR();
@@ -906,6 +993,7 @@ function onDisconnected() {
   isSending  = false;
   document.getElementById('btn-connect').disabled = false;
   updateRelayBtnVisibility();
+  startPresence(); // back to idle — resume listening for inbound relay connections
 }
 
 function disconnect() {
